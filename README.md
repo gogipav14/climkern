@@ -1,202 +1,182 @@
-# ClimKern: a Python package for calculating radiative feedbacks
+# ClimKern-Retune
 
-[![DOI](https://zenodo.org/badge/588323813.svg)](https://doi.org/10.5281/zenodo.10291284)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+NIPALS-PLS Tunable Radiative Kernels for Climate Feedback Analysis
 
 ## Overview
 
-The radiative kernel technique outlined in [Soden & Held (2006)](https://journals.ametsoc.org/view/journals/clim/19/14/jcli3799.1.xml) and [Soden et al. (2008)](https://journals.ametsoc.org/view/journals/clim/21/14/2007jcli2110.1.xml) is commonly used to calculate climate feedbacks. The "kernels" refer to datasets containing the radiative sensitivities of TOA (or surface) radiation to changes in fields such as temperature, specific humidity, and surface albedo; they are typically computed using offline radiative transfer calculations.
+ClimKern-Retune implements a data-driven approach to radiative kernel estimation using NIPALS-PLS (Nonlinear Iterative Partial Least Squares) regression with physical constraints and SIMCA-style state classification.
 
-ClimKern
-* standardizes the assumptions used in producing radiative feedbacks using kernels
-* simplifies the calculations by giving users access to functions tailored for climate model and reanalysis output
-* provides access to a repository of **11 different radiative kernels** to quantify interkernel spread
+### Key Features
 
-The below information is meant to be a quickstart guide, but all functions and capabilities can be found at ClimKern's [documentation site](https://tyfolino.github.io/climkern/).
+- **NIPALS-PLS regression** with missing data handling (via [open_nipals](https://github.com/gogipav14/open_nipals))
+- **Multi-level radiative constraints** (surface Stefan-Boltzmann, TOA energy balance)
+- **SIMCA-style climate state classification** (latitude × cloud × stability regimes)
+- **Observational training** using CERES TOA fluxes + AIRS atmospheric profiles
+- **Q² cross-validation** for model selection and vertical resolution comparison
+- **Traditional kernel comparison** for validation
+
+### Mathematical Framework
+
+For each climate state *s* ∈ {tropical, subtropical, midlatitude, polar} × {clear, cloudy} × {stable, convective}:
+
+```
+Predictors: X_s = [ΔT(p), Δq(p), Δα, Δcloud, ...]
+Response:   Y_s = [ΔR_LW, ΔR_SW]
+
+PLS: Y_s = X_s · B_s + ε  where  B_s = W_s(P_s'W_s)⁻¹Q_s'
+```
+
+Physical constraints (soft regularization):
+```
+Minimize: ||Y - XB||² + λ₁||C_SB||² + λ₂||C_cons||²
+
+where:
+  C_SB:   Stefan-Boltzmann residual (ΔF_sfc ≈ 4εσT³ΔT)
+  C_cons: Energy conservation residual (∫ΔR dA = ΔN)
+```
 
 ## Installation
 
-ClimKern is built on the Xarray architecture and requires several other packages for
-regridding and climate model output compatibility. The easiest method is to create a
-new conda environment using [conda](https://conda.io/projects/conda/en/latest/user-guide/install/index.html) or [mamba](https://mamba-framework.readthedocs.io/en/latest/installation_guide.html):
+```bash
+# Clone the repository
+git clone https://github.com/gogipav14/ClimKern-Retune.git
+cd ClimKern-Retune
 
-`conda create -n ck_env python=3.11 esmpy -c conda-forge`
+# Install with dependencies
+pip install -e .
 
-A conda environment is necessary because [ESMPy](https://earthsystemmodeling.org/esmpy/), which is required for regridding kernels, is unavailable via `pip`.
-
-Next, activate the new environment:
-
-`conda activate ck_env`
-
-Finally, install ClimKern with [pip](https://pip.pypa.io/en/stable/#):
-
-`pip install climkern`
-
-Once installed, ClimKern requires kernels found on [Zenodo](https://zenodo.org/doi/10.5281/zenodo.10223376). These kernels (and tutorial data) are stored separately because of PyPI size limitations. You can download the kernels easily using the download script included in the package:  
-
-`python -m climkern download`
-
-Note: The kernels & tutorial data are approximately 5 GB.
-
-> **IMPORTANT:** SSL Certificate Errors  
-> It is possible to get an SSL certificate error when trying to run the download script. You may try updating your certificate authorities with `pip install --upgrade certifi`.  
->  
-> If that does not work, you can manually download the `data.zip` file from Zenodo and unzip it in your ClimKern package directory.
-
-
-<i>Optional</i>:
-
-You can test your installation via pytest.
-
-```
-pip install pytest
-pytest -v --pyargs climkern
+# Or install with development tools
+pip install -e ".[dev]"
 ```
 
-All three tests should pass.
+**Note:** Requires the `open_nipals` package:
+```bash
+pip install git+https://github.com/gogipav14/open_nipals.git
+```
 
-## Basic tutorial
-### Temperature, water vapor, and surface albedo feedbacks
+## Quick Start
 
-This brief tutorial will cover the basics of using ClimKern. Please check the [documentation](https://tyfolino.github.io/climkern/) for a more complete list of available functions. We start by importing ClimKern and accessing our tutorial data:
+### Single-Regime Kernel
+
 ```python
-import climkern as ck
+from climkern_retune import TunableKernel, KernelConfig
 
-ctrl, pert = ck.tutorial_data("ctrl"), ck.tutorial_data("pert")
+# Configure kernel
+config = KernelConfig(n_components=5)
+kernel = TunableKernel(config=config)
+
+# Fit to training data
+# X: (n_samples, n_features) - atmospheric state changes
+# Y: (n_samples, 2) - [ΔR_LW, ΔR_SW] radiative response
+kernel.fit(X_train, Y_train, feature_names=feature_names)
+
+# Compute radiative response
+output = kernel.compute(X_test)
+print(f"LW response: {output.delta_r_lw.mean():.2f} W/m²")
+
+# Evaluate with Q²
+q2 = kernel.evaluate(X_test, Y_test)
+print(f"Q² = {q2:.4f}")
 ```
 
-These datasets have all the necessary variables for computing feedbacks. Let's start with temperature feedbacks.
+### Multi-State Kernel
+
 ```python
-LR, Planck = ck.calc_T_feedbacks(
-    ctrl.T, ctrl.TS, ctrl.PS, pert.T, pert.TS, pert.PS, pert.TROP_P, kern="GFDL"
+from climkern_retune import MultiStateKernel, ClimateStateClassifier
+
+# Create state classifier
+classifier = ClimateStateClassifier()
+
+# Fit multi-state kernel
+kernel = MultiStateKernel(classifier=classifier)
+kernel.fit(
+    X, Y,
+    latitude=lat,
+    cloud_fraction=cf,
+    lts=lts,  # Lower Tropospheric Stability
+    feature_names=feature_names,
 )
+
+# Predict with automatic regime routing
+output = kernel.compute(X_new, latitude=lat_new, cloud_fraction=cf_new, lts=lts_new)
 ```
-To produce succinct output, let's use ClimKern's spatial average function. Additionally, we will normalize the feedbacks by global average surface temperature change to convert from Wm<sup>-2</sup>, the output of ClimKern functions, to the more commonly used units of Wm<sup>-2</sup>K<sup>-1</sup>.
+
+### Cross-Validation
+
 ```python
-# compute global average surface temperature change
-dTS_glob_avg = ck.spat_avg(pert.TS - ctrl.TS)
+from climkern_retune.validation import KFoldCV, select_n_components
 
-# normalize temperature feedbacks by temperature change and take
-# the annual average
-print("The global average lapse rate feedback is {val:.2f} W/m^2/K.".format(
-    val=(ck.spat_avg(LR)/dTS_glob_avg).mean()))
-print("The global average Planck feedback is {val:.2f} W/m^2/K.".format(
-    val=(ck.spat_avg(Planck)/dTS_glob_avg).mean()))
-```
-Expected result with the GFDL kernel:
-> `The global average lapse rate feedback is -0.41 W/m^2/K.`
-> 
-> `The global average Planck feedback is -3.12 W/m^2/K.`
-
-The water vapor and surface albedo feedbacks are calculated similarly:
-```python
-q_lw,q_sw = ck.calc_q_feedbacks(ctrl.Q,ctrl.T,ctrl.PS,
-                                pert.Q,pert.PS,pert.TROP_P,
-                                kern="GFDL",method=1)
-alb = ck.calc_alb_feedback(ctrl.FSUS,ctrl.FSDS,
-                           pert.FSUS,pert.FSDS,
-                           kern="GFDL")
-
-print("The global average water vapor feedback is {val:.2f} W/m^2/K.".format(
-    val=(ck.spat_avg(q_lw+q_sw)/dTS_glob_avg).mean()))
-print("The global average surface albedo feedback is {val:.2f} W/m^2/K."
-      .format(
-    val=(ck.spat_avg(alb)/dTS_glob_avg).mean()))
-```
-Expected result:
->`The global average water vapor feedback is 1.44 W/m^2/K.`
->
->`The global average surface albedo feedback is 0.38 W/m^2/K.`
-
-### Cloud feedbacks
-The cloud feedbacks, calculated using [Soden et al. (2008)](https://journals.ametsoc.org/view/journals/clim/21/14/2007jcli2110.1.xml) adjustment method, require all-sky and clear-sky versions of other feedbacks and the instantaneous radiative forcing.
-
-First, we need the longwave and shortwave cloud radiative effects, which ClimKern can calculate.
-```python
-dCRE_LW = ck.calc_dCRE_LW(ctrl.FLNT,pert.FLNT,ctrl.FLNTC,pert.FLNTC)
-dCRE_SW = ck.calc_dCRE_SW(ctrl.FSNT,pert.FSNT,ctrl.FSNTC,pert.FSNTC)
-```
-Let's also read in the tutorial erf.
-```python
-erf = ck.tutorial_data('ERF')
-```
-Next, we need the clear-sky versions of the temperature, water vapor, and surface albedo feedbacks.
-```python
-#_cs means clear-sky
-LR_cs,Planck_cs = ck.calc_T_feedbacks(ctrl.T,ctrl.TS,ctrl.PS,
-                                pert.T,pert.TS,pert.PS,pert.TROP_P,
-                                kern="GFDL",sky="clear-sky")
-q_lw_cs,q_sw_cs = ck.calc_q_feedbacks(ctrl.Q,ctrl.T,ctrl.PS,
-                                pert.Q,pert.PS,pert.TROP_P,
-                                kern="GFDL",method=1,sky="clear-sky")
-alb_cs = ck.calc_alb_feedback(ctrl.FSUS,ctrl.FSDS,
-                           pert.FSUS,pert.FSDS,
-                           kern="GFDL",sky="clear-sky")
-```
-At last, we can calculate the longwave and shortwave cloud feedbacks.
-```python
-cld_lw = ck.calc_cloud_LW(LR + Planck,LR_cs+Planck_cs,q_lw,q_lw_cs,dCRE_LW,
-                          erf.erf_lwas,erf.erf_lwcs)
-cld_sw = ck.calc_cloud_SW(alb,alb_cs,q_sw,q_sw_cs,dCRE_SW,erf.erf_swas,
-                          erf.erf_swcs)
-
-print("The global average SW cloud feedback is {val:.2f} W/m^2/K.".format(
-    val=(ck.spat_avg(cld_sw)/dTS_glob_avg).mean()))
-print("The global average LW cloud feedback is {val:.2f} W/m^2/K.".format(
-    val=(ck.spat_avg(cld_lw)/dTS_glob_avg).mean()))
-```
-Expected result:
->`The global average SW cloud feedback is 0.38 W/m^2/K.`
->
->`The global average LW cloud feedback is 0.03 W/m^2/K.`
-
-## Troubleshooting
-
-If you are having issues downloading dependencies with `pip`, you can also try adding them to your conda environment with `conda`, i.e.:
-
-`conda install xesmf -c conda-forge`
-
-If you are having trouble downloading the  kernels and tutorial data using the package's download function, you can also download the data directly from the [Zenodo repository](https://zenodo.org/doi/10.5281/zenodo.10223376) and put it in the climkern/data directory located wherever your conda/mamba environments are stored.
-
-## Other features & coming soon
-ClimKern has several other useful features:
-- Four different methods for calculating water vapor feedbacks.
-- The ability to calculate the "relative humidity" version of all feedbacks following [Held & Shell (2012)](https://journals.ametsoc.org/view/journals/clim/25/8/jcli-d-11-00721.1.xml) and [Zelinka et al. (2020)](https://agupubs.onlinelibrary.wiley.com/doi/10.1029/2019GL085782).
-- Functions to calculate stratospheric temperature and water vapor feedbacks.
-
-We are continuously updating the package. Please check out the [GitHub issues page](https://github.com/tyfolino/climkern/issues) for this repository for plans for new features.
-
-## Want to help? Get involved!
-
-We deeply appreciate contributions from other scientists and programmers and are happy to attribute credit accordingly. If you wish to contribute, please read our [CONTRIBUTING.md](.github/CONTRIBUTING.md) for guidelines on how to get started.
-
-**tl;dr**:
-- Work from the `dev` branch, **not** `main`
-- Submit a pull request when ready.
-
-## 📖 How to Cite ClimKern
-If you use ClimKern in your work, please cite our paper:
-
-Janoski, T. P., Mitevski, I., Kramer, R. J., Previdi, M., & Polvani, L. M. (2025). ClimKern v1.2: a new Python package and kernel repository for calculating radiative feedbacks. *Geoscientific Model Development*, *18*(10), 3065–3079. https://doi.org/10.5194/gmd-18-3065-2025
-
-<details>
-<summary>BibTeX</summary>
-
-```bibtex
-@article{janoski2025climkern,
-  AUTHOR = {Janoski, T. P. and Mitevski, I. and Kramer, R. J. and Previdi, M. and Polvani, L. M.},
-  TITLE = {ClimKern v1.2: a new Python package and kernel repository for calculating radiative feedbacks},
-  JOURNAL = {Geoscientific Model Development},
-  VOLUME = {18},
-  YEAR = {2025},
-  NUMBER = {10},
-  PAGES = {3065--3079},
-  URL = {https://gmd.copernicus.org/articles/18/3065/2025/},
-  DOI = {10.5194/gmd-18-3065-2025}
-}
+# Select optimal number of components
+results = select_n_components(
+    X, Y,
+    model_class=TunableKernel,
+    max_components=15,
+    cv=KFoldCV(n_splits=5),
+)
+print(f"Optimal components: {results['optimal_n']}")
 ```
 
-</details>
+## Project Structure
 
-If you are citing the software itself (e.g., for reproducibility), use the citation metadata included in our [`CITATION.cff`](CITATION.cff) file. GitHub also provides downloadable citation formats via the "Cite this repository" button on the right-hand sidebar.
+```
+ClimKern-Retune/
+├── src/climkern_retune/
+│   ├── core/
+│   │   ├── nipals_pls.py       # Constrained NIPALS-PLS
+│   │   ├── state_classifier.py # Climate regime classification
+│   │   └── tunable_kernel.py   # Kernel interface
+│   ├── data/
+│   │   ├── loaders.py          # CERES, AIRS, ERA5 readers
+│   │   └── preprocessors.py    # Anomaly computation
+│   ├── validation/
+│   │   ├── cross_validation.py # K-fold, time-series CV
+│   │   └── kernel_compare.py   # Traditional kernel comparison
+│   └── constraints/            # Physical constraint functions
+├── tests/                      # Unit tests
+├── examples/                   # Usage examples
+└── configs/                    # Default configurations
+```
 
+## State Classification
+
+The classifier assigns samples to up to 16 regimes:
+
+| Latitude Band | Cloud State | Stability |
+|---------------|-------------|-----------|
+| Tropical (|lat| < 15°) | Clear (CF < 0.5) | Convective (LTS < 18K) |
+| Subtropical (15-35°) | Cloudy (CF ≥ 0.5) | Stable (LTS ≥ 18K) |
+| Midlatitude (35-60°) | | |
+| Polar (|lat| ≥ 60°) | | |
+
+## Physical Constraints
+
+1. **Stefan-Boltzmann (Surface)**: Enforces linearized blackbody emission
+   ```
+   ΔF_sfc ≈ 4εσT³ΔT
+   ```
+
+2. **Energy Conservation (Global)**: Ensures area-weighted flux balance
+   ```
+   ∫ ΔR dA = ΔN (global imbalance change)
+   ```
+
+3. **TOA Effective Emissivity**: Constrains effective temperature relationship
+   ```
+   OLR ≈ ε_eff σ T_eff⁴
+   ```
+
+## Validation
+
+- Compare Q² between standard 17-level and adaptive vertical resolution
+- Validate against IPCC AR6 assessed feedback ranges
+- Test extrapolation to 4×CO2 scenarios
+
+## References
+
+- Wold, S., et al. (2001). PLS-regression: a basic tool of chemometrics. *Chemometrics and Intelligent Laboratory Systems*.
+- Soden, B.J., et al. (2008). Quantifying climate feedbacks using radiative kernels. *Journal of Climate*.
+- Forster, P., et al. (2021). The Earth's Energy Budget, Climate Feedbacks, and Climate Sensitivity. IPCC AR6 WGI Chapter 7.
+
+## License
+
+MIT License
