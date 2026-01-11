@@ -67,7 +67,8 @@ Documentation = "https://climkern-retune.readthedocs.io"
 Repository = "https://github.com/gogipav14/ClimKern-Retune"
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["."]
+include = ["climkern*"]
 
 [tool.black]
 line-length = 88
@@ -84,6 +85,6 @@ warn_unused_configs = true
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "climkern/tests", "climkern_retune/tests"]
 python_files = "test_*.py"
 addopts = "-v --cov=climkern_retune --cov-report=term-missing"
