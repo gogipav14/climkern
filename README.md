@@ -197,23 +197,41 @@ The framework is designed to work with satellite-based radiative flux observatio
 - Surface LW downwelling: sfc_lw_down_all (W/m²)
 ```
 
-### Example Data Pipeline
+### Running the Predictive Analysis
+
+```bash
+# Run the complete predictive analysis pipeline
+python predictive_analysis_real_data.py
+
+# This will:
+# 1. Download CERES/AIRS data from NASA POWER API (or use synthetic fallback)
+# 2. Train NIPALS-PLS model on 2018-2022 data
+# 3. Make predictions for 2023 (unseen test year)
+# 4. Generate parity plots and analysis in results/
+```
+
+### Using the Core API
+
 ```python
-from predictive_analysis_real_data import (
-    download_ceres_airs_data,
-    prepare_pls_data,
-    train_predictive_model
-)
+from nipals_pls import ConstrainedNipalsPLS, create_surface_constraint
+import numpy as np
 
-# Load CERES/AIRS data for multiple locations
-data = download_ceres_airs_data(
-    locations=['Arctic', 'Midlatitude_NH', 'Tropical_Atlantic'],
-    start_year=2018,
-    end_year=2023
-)
+# Prepare your climate data
+X = np.load('atmospheric_state_changes.npy')  # (n_samples, n_features)
+Y = np.load('radiative_flux_changes.npy')      # (n_samples, 2) for [LW, SW]
 
-# Prepare for NIPALS-PLS
-X, Y, feature_names = prepare_pls_data(data)
+# Center the data
+X_c = X - X.mean(axis=0)
+Y_c = Y - Y.mean(axis=0)
+
+# Create constrained model
+constraints = [create_surface_constraint(weight=0.5)]
+model = ConstrainedNipalsPLS(n_components=5, constraints=constraints)
+
+# Fit and predict
+model.fit(X_c, Y_c)
+Y_pred = model.predict(X_c)
+q2 = model.q2_score(X_c, Y_c)
 ```
 
 ## Validation

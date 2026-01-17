@@ -9,19 +9,25 @@ Main interface for NIPALS-PLS based radiative kernels with:
 
 from __future__ import annotations
 
+import os
+import sys
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
 
-from climkern_retune.core.nipals_pls import (
+# Ensure root directory is in path for imports
+_root_dir = os.path.dirname(os.path.abspath(__file__))
+if _root_dir not in sys.path:
+    sys.path.insert(0, _root_dir)
+
+from nipals_pls import (
     ConstrainedNipalsPLS,
     PhysicalConstraint,
     create_multilevel_constraints,
 )
-from climkern_retune.core.state_classifier import (
+from state_classifier import (
     ClimateState,
     ClimateStateClassifier,
     SIMCAClassifier,

@@ -31,8 +31,18 @@ from state_classifier import (
     LatitudeBand,
     CloudState,
     StabilityState,
+    SIMCAClassifier,
+    DataDrivenClassifier,
     compute_lts,
     compute_eis,
+)
+
+from tunable_kernel import (
+    TunableKernel,
+    MultiStateKernel,
+    KernelConfig,
+    KernelOutput,
+    VerticalKernelProfile,
 )
 
 __all__ = [
@@ -55,6 +65,14 @@ __all__ = [
     "LatitudeBand",
     "CloudState",
     "StabilityState",
+    "SIMCAClassifier",
+    "DataDrivenClassifier",
     "compute_lts",
     "compute_eis",
+    # Tunable Kernels
+    "TunableKernel",
+    "MultiStateKernel",
+    "KernelConfig",
+    "KernelOutput",
+    "VerticalKernelProfile",
 ]

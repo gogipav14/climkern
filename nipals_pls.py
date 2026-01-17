@@ -375,11 +375,21 @@ class ConstrainedNipalsPLS:
         -------
         Y_pred : ndarray of shape (n_samples, n_targets)
             Predicted response.
+
+        Note
+        ----
+        Currently uses base PLS prediction. The constraint adjustments to
+        y_loadings are tracked in results_.constraint_residuals but do not
+        yet modify predictions. This is a known limitation - constraint
+        optimization primarily serves as a diagnostic during fitting.
+
+        TODO: Implement proper loading propagation for constrained predictions.
+        The challenge is that the regression vector B = W(P'W)^-1 Q' needs
+        to be recomputed when Q (y_loadings) is adjusted.
         """
         if self.base_pls_ is None or self.results_ is None:
             raise ValueError("Model not fitted. Call fit() first.")
 
-        # Use base PLS prediction (which uses adjusted loadings via our results)
         return self.base_pls_.predict(X)
 
     def fit_transform(
