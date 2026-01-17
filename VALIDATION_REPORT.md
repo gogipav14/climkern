@@ -148,11 +148,13 @@ The implementation handles:
 
 ## Known Issues and Workarounds
 
-### Issue 1: Hotelling T² Bug in PLS
+### Issue 1: Hotelling T² Bug in PLS (FIX PENDING)
 
 **Problem:** `calc_imd()` fails when passing raw data array.
 
-**Workaround:**
+**Status:** Fix implemented (line 579: `input_scores` → `scores`), pending push to repository.
+
+**Workaround (current version):**
 ```python
 # Instead of:
 t2 = model.calc_imd(input_array=X, metric="HotellingT2")
@@ -162,13 +164,21 @@ scores = model.transform(X)
 t2 = model.calc_imd(input_scores=scores, metric="HotellingT2")
 ```
 
-### Issue 2: Regression Vector Discrepancy
+### Issue 2: Regression Vector Discrepancy (FIX PENDING)
 
 **Problem:** `get_reg_vector()` gives slightly different predictions than `predict()`.
 
-**Workaround:** Use `predict()` directly for all predictions. Only use `get_reg_vector()` for interpretability analysis where small differences are acceptable.
+**Status:** Fix implemented (added missing `(P.T @ W)^-1` term in PLS coefficient formula), pending push to repository.
 
-### Issue 3: PCA Scores Not Perfectly Orthogonal
+**Workaround (current version):** Use `predict()` directly for all predictions. Only use `get_reg_vector()` for interpretability analysis where small differences are acceptable.
+
+### Issue 3: Transform/fit_scores_x Mismatch (FIX PENDING)
+
+**Problem:** `transform(X)` doesn't match `fit_scores_x` for the same data.
+
+**Status:** Fix implemented (made `use_denom` conditional on NaN presence in `_nan_mult()`), pending push to repository.
+
+### Issue 4: PCA Scores Not Perfectly Orthogonal
 
 **Problem:** Small off-diagonal elements in T'T matrix (~1e-6).
 
@@ -195,15 +205,10 @@ t2 = model.calc_imd(input_scores=scores, metric="HotellingT2")
 
 ### For Developers
 
-1. **Bug fix needed in `nipalsPLS.py:557-558`:**
-   ```python
-   # Current (buggy):
-   scores = self.transform(X=input_array)
-   # Later references input_scores which is still None
-
-   # Should be:
-   input_scores = self.transform(X=input_array)
-   ```
+1. **Bug fixes have been implemented** but not yet pushed to the repository:
+   - Hotelling T² bug: `input_scores` → `scores` in `calc_imd()`
+   - Regression vector: Added `(P.T @ W)^-1` term to coefficient formula
+   - Transform mismatch: Made `use_denom` conditional on NaN presence
 
 2. **Consider adding JAX backend** for gradient computation in constraint optimization (currently uses finite differences).
 
