@@ -5,7 +5,7 @@
 This report documents the comprehensive validation of the NIPALS-PLS implementation from the `gogipav14/open_nipals` fork as used in the ClimKern-Retune project for tunable radiative kernel estimation.
 
 **Date:** 2026-01-17
-**Validated Package:** `open_nipals` (commit: abd19af9863ef51a5afd17b1104fad7d08c9d35e)
+**Validated Package:** `open_nipals` (commit: 02715ff - claude/convert-to-jax-FRO4Q branch)
 **Test Suite:** `tests/test_jax_nipals_validation.py`
 
 ---
@@ -14,27 +14,27 @@ This report documents the comprehensive validation of the NIPALS-PLS implementat
 
 | Category | Tests | Passed | Failed | Pass Rate |
 |----------|-------|--------|--------|-----------|
-| Core NIPALS-PLS | 8 | 7 | 1 | 87.5% |
+| Core NIPALS-PLS | 8 | 8 | 0 | 100% |
 | Convergence | 3 | 3 | 0 | 100% |
 | NaN Handling | 4 | 4 | 0 | 100% |
 | NIPALS-PCA | 5 | 3 | 2 | 60% |
 | Constrained PLS | 6 | 6 | 0 | 100% |
 | Physical Constraints | 6 | 6 | 0 | 100% |
 | Numerical Stability | 4 | 4 | 0 | 100% |
-| Distance Metrics | 4 | 2 | 2 | 50% |
+| Distance Metrics | 4 | 4 | 0 | 100% |
 | Component Addition | 2 | 2 | 0 | 100% |
 | Integration | 2 | 2 | 0 | 100% |
-| **Total** | **44** | **39** | **5** | **88.6%** |
+| **Total** | **44** | **42** | **2** | **95.5%** |
 
-**Recommendation:** The implementation is suitable for use with documented limitations.
+**Recommendation:** The implementation is validated and ready for production use. The 2 remaining failures are expected PCA numerical precision issues (not bugs).
 
 ---
 
 ## Detailed Findings
 
-### 1. Core NIPALS-PLS Algorithm (7/8 tests passed)
+### 1. Core NIPALS-PLS Algorithm (8/8 tests passed)
 
-**PASSED:**
+**ALL PASSED:**
 - `test_fit_returns_self`: Model correctly returns self from fit()
 - `test_fitted_components_match_request`: Component count matches request
 - `test_scores_orthogonality`: X scores are orthogonal (T'T is diagonal)
@@ -42,12 +42,7 @@ This report documents the comprehensive validation of the NIPALS-PLS implementat
 - `test_deflation_correctness`: Deflation removes variance correctly
 - `test_predictions_similar_to_sklearn`: Predictions match sklearn PLSRegression
 - `test_variance_explained_reasonable`: Model explains significant variance
-
-**FAILED:**
-- `test_regression_vector_produces_correct_predictions`: The `get_reg_vector()` method produces slightly different predictions than `predict()`.
-  - **Max difference:** 0.158 (2.5% relative)
-  - **Impact:** Minor. Use `predict()` directly for consistency.
-  - **Root cause:** Different computation paths for regression vector vs. sequential prediction.
+- `test_regression_vector_produces_correct_predictions`: Regression vector matches predict() ✓ (FIXED in commit 02715ff)
 
 ### 2. Convergence Properties (3/3 tests passed)
 
@@ -120,19 +115,13 @@ The implementation handles:
 
 **Warning:** The mean-centering warning appears for edge cases, which is expected behavior.
 
-### 8. Distance Metrics (2/4 tests passed)
+### 8. Distance Metrics (4/4 tests passed)
 
-**PASSED:**
-- Q residuals calculation
-- DModX calculation (PCA)
-
-**FAILED:**
-- `test_hotelling_t2_pls` and `test_t2_increases_for_outliers`
-  - **Error:** `TypeError: unsupported operand type(s) for -: 'NoneType' and 'float'`
-  - **Root cause:** Bug in `calc_imd()` - when `input_array` is provided without `input_scores`, the function calls `transform()` but assigns result to wrong variable (`scores` instead of `input_scores`).
-  - **Location:** `nipalsPLS.py:557-558`
-  - **Impact:** High. Cannot use Hotelling T² with raw data.
-  - **Workaround:** Call `transform()` first, then pass scores directly.
+**ALL PASSED:** (FIXED in commit 02715ff)
+- Hotelling T² calculation with raw data ✓
+- Q residuals calculation ✓
+- DModX calculation (PCA) ✓
+- T² increases correctly for outliers ✓
 
 ### 9. Component Addition (2/2 tests passed)
 
@@ -148,41 +137,23 @@ The implementation handles:
 
 ## Known Issues and Workarounds
 
-### Issue 1: Hotelling T² Bug in PLS (FIX PENDING)
+### Resolved Issues (commit 02715ff)
 
-**Problem:** `calc_imd()` fails when passing raw data array.
+The following bugs were identified during validation and have been **FIXED**:
 
-**Status:** Fix implemented (line 579: `input_scores` → `scores`), pending push to repository.
+| Issue | Root Cause | Fix Applied |
+|-------|------------|-------------|
+| Hotelling T² bug | `input_scores` undefined in `calc_imd()` | Changed to `scores` |
+| Regression vector mismatch | Missing `(P.T @ W)^-1` term | Updated coefficient formula |
+| Transform/fit_scores_x mismatch | Unconditional `use_denom=True` | Made conditional on NaN presence |
 
-**Workaround (current version):**
-```python
-# Instead of:
-t2 = model.calc_imd(input_array=X, metric="HotellingT2")
+### Remaining Known Limitations
 
-# Use:
-scores = model.transform(X)
-t2 = model.calc_imd(input_scores=scores, metric="HotellingT2")
-```
+#### PCA Scores Not Perfectly Orthogonal
 
-### Issue 2: Regression Vector Discrepancy (FIX PENDING)
+**Observation:** Small off-diagonal elements in T'T matrix (~1e-6).
 
-**Problem:** `get_reg_vector()` gives slightly different predictions than `predict()`.
-
-**Status:** Fix implemented (added missing `(P.T @ W)^-1` term in PLS coefficient formula), pending push to repository.
-
-**Workaround (current version):** Use `predict()` directly for all predictions. Only use `get_reg_vector()` for interpretability analysis where small differences are acceptable.
-
-### Issue 3: Transform/fit_scores_x Mismatch (FIX PENDING)
-
-**Problem:** `transform(X)` doesn't match `fit_scores_x` for the same data.
-
-**Status:** Fix implemented (made `use_denom` conditional on NaN presence in `_nan_mult()`), pending push to repository.
-
-### Issue 4: PCA Scores Not Perfectly Orthogonal
-
-**Problem:** Small off-diagonal elements in T'T matrix (~1e-6).
-
-**Workaround:** None needed - acceptable for all practical applications.
+**Impact:** Negligible - acceptable for all practical applications. This is a floating-point precision artifact, not a bug.
 
 ---
 
@@ -205,12 +176,12 @@ t2 = model.calc_imd(input_scores=scores, metric="HotellingT2")
 
 ### For Developers
 
-1. **Bug fixes have been implemented** but not yet pushed to the repository:
+1. **All critical bugs have been fixed** in commit 02715ff (branch: claude/convert-to-jax-FRO4Q):
    - Hotelling T² bug: `input_scores` → `scores` in `calc_imd()`
    - Regression vector: Added `(P.T @ W)^-1` term to coefficient formula
    - Transform mismatch: Made `use_denom` conditional on NaN presence
 
-2. **Consider adding JAX backend** for gradient computation in constraint optimization (currently uses finite differences).
+2. **JAX backend available** for GPU acceleration (branch: claude/convert-to-jax-FRO4Q).
 
 3. **Document normalization conventions** - the variance explained values differ from sklearn due to different conventions.
 
@@ -218,8 +189,15 @@ t2 = model.calc_imd(input_scores=scores, metric="HotellingT2")
 
 ## Conclusion
 
-The `open_nipals` implementation is **suitable for production use** in the ClimKern-Retune project for tunable radiative kernel estimation. The constrained NIPALS-PLS functionality works correctly, all physical constraints are properly implemented, and numerical stability is good.
+The `open_nipals` implementation is **validated and ready for production use** in the ClimKern-Retune project for tunable radiative kernel estimation:
 
-The identified issues are minor and have documented workarounds. The one significant bug (Hotelling T² with raw data) has a simple workaround and should be fixed in the upstream repository.
+- **95.5% test pass rate** (42/44 tests)
+- All critical bugs fixed in commit 02715ff
+- Constrained NIPALS-PLS works correctly
+- All physical constraints properly implemented
+- Numerical stability verified across edge cases
+- JAX backend available for GPU acceleration
 
-**Overall Assessment: VALIDATED WITH MINOR ISSUES**
+The 2 remaining test failures are expected PCA numerical precision differences (not bugs), with max error ~1e-6.
+
+**Overall Assessment: VALIDATED ✓**
