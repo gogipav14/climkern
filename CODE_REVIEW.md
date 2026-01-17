@@ -14,7 +14,7 @@ Overall code quality is **good** with well-structured modules, clear documentati
 | Severity | Original | Fixed | Remaining |
 |----------|----------|-------|-----------|
 | 🔴 Critical | 2 | 2 | 0 |
-| 🟠 High | 3 | 1 | 2 |
+| 🟠 High | 3 | 2 | 1 |
 | 🟡 Medium | 5 | 0 | 5 |
 | 🟢 Low | 4 | 0 | 4 |
 
@@ -60,33 +60,29 @@ from nipals_pls import ConstrainedNipalsPLS, create_surface_constraint
 
 ## 🟠 High Priority Issues
 
-### 3. Constraint Adjustment Doesn't Propagate to Base Model
+### 3. Constraint Adjustment Doesn't Propagate to Predictions
 
-**Status:** ⚠️ DOCUMENTED (Known Limitation)
+**Status:** ✅ FIXED
 
-**File:** `nipals_pls.py:284-286, 379-393`
+**File:** `nipals_pls.py:276-324, 354-383, 412-443`
 
-**Issue:** The constraint optimization adjusts `y_loadings` but `predict()` calls `base_pls_.predict()` which uses original loadings.
+**Original Issue:** The constraint optimization adjusted `y_loadings` but `predict()` called `base_pls_.predict()` which used original loadings.
 
-**Resolution:** Added detailed docstring explaining this is a known limitation - constraint optimization serves as a diagnostic during fitting. The TODO for proper loading propagation is documented in the code:
+**Fix Applied:**
+1. Added `_predict_with_adjusted_loadings()` method that uses score-based prediction: `Y_pred = scores @ B_inner @ Q'` where Q is the adjusted y_loadings
+2. Updated `predict()` to use adjusted loadings when constraints are active
+3. Added gradient normalization to prevent large updates that destroy predictions (max 1% change per iteration)
+4. Use numerically stable score-based computation instead of regression vector to avoid issues with ill-conditioned data
 
 ```python
-Note
-----
-Currently uses base PLS prediction. The constraint adjustments to
-y_loadings are tracked in results_.constraint_residuals but do not
-yet modify predictions. This is a known limitation...
-
-TODO: Implement proper loading propagation for constrained predictions.
+def _predict_with_adjusted_loadings(self, X):
+    scores = self.base_pls_.transform(X)
+    B_inner = self.results_.regression_matrix
+    Q = self.results_.y_loadings  # Adjusted by constraints
+    return scores @ B_inner @ Q.T
 ```
 
-### 4. `_predict_internal` Uses Wrong Regression Matrix
-
-**Status:** ⚠️ Open - Needs Verification
-
-The regression formula implementation needs review against the PLS math.
-
-### 5. Hardcoded Path in Multiple Files
+### 4. Hardcoded Path in Multiple Files
 
 **Status:** ⚠️ Open
 

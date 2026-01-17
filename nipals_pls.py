@@ -67,13 +67,18 @@ class ConstrainedPLSResults:
     x_scores: NDArray[np.floating]  # T matrix
     y_scores: NDArray[np.floating]  # U matrix
     x_loadings: NDArray[np.floating]  # P matrix
-    y_loadings: NDArray[np.floating]  # Q matrix
+    y_loadings: NDArray[np.floating]  # Q matrix (may be adjusted by constraints)
     x_weights: NDArray[np.floating]  # W matrix
-    regression_matrix: NDArray[np.floating]  # B matrix
+    regression_matrix: NDArray[np.floating]  # Inner (P'W)^-1 matrix from base PLS
+
+    # Marker indicating y_loadings have been adjusted by constraints.
+    # We don't store a precomputed regression vector due to numerical stability.
+    # Instead, predict() uses score-based computation: T @ B_inner @ Q'
+    regression_vector: str | None = None  # "adjusted" if constraints applied, None otherwise
 
     # Variance explained
-    x_variance_explained: NDArray[np.floating]
-    y_variance_explained: NDArray[np.floating]
+    x_variance_explained: NDArray[np.floating] = field(default_factory=lambda: np.array([]))
+    y_variance_explained: NDArray[np.floating] = field(default_factory=lambda: np.array([]))
 
     # Constraint diagnostics
     constraint_residuals: dict[str, float] = field(default_factory=dict)
@@ -84,7 +89,13 @@ class ConstrainedPLSResults:
 
     @property
     def coefficients(self) -> NDArray[np.floating]:
-        """Full regression coefficients X -> Y."""
+        """
+        Full regression coefficients X -> Y.
+
+        Note: For numerical stability, we compute via W @ R @ Q' where R is the
+        inner regression matrix. This may have numerical issues for ill-conditioned
+        data; use predict() for actual predictions.
+        """
         return self.x_weights @ self.regression_matrix @ self.y_loadings.T
 
 
@@ -247,6 +258,21 @@ class ConstrainedNipalsPLS:
         # Convert cumulative to per-component
         return np.diff(np.concatenate([[0], var_explained]))
 
+    def _recompute_regression_vector(self) -> None:
+        """
+        Mark that y_loadings have been adjusted and predictions should use them.
+
+        Note: We don't precompute a regression vector B = W @ (P'W)^-1 @ B_inner @ Q'
+        because the (P'W)^-1 term can be numerically unstable for ill-conditioned data.
+        Instead, we use a score-based prediction path that matches open_nipals.predict().
+        """
+        if self.results_ is None:
+            return
+
+        # Set flag to indicate y_loadings have been adjusted
+        # The actual prediction will use: T @ B_inner @ Q' where T = transform(X)
+        self.results_.regression_vector = "adjusted"  # Marker, not actual vector
+
     def _apply_constraints(
         self,
         X: NDArray[np.floating],
@@ -256,9 +282,12 @@ class ConstrainedNipalsPLS:
         if self.results_ is None:
             return
 
+        # Mark that constraints are being applied
+        self._recompute_regression_vector()
+
         for iteration in range(self.constraint_iter):
-            # Get current predictions
-            Y_pred = self.predict(X)
+            # Get current predictions using adjusted y_loadings
+            Y_pred = self._predict_with_adjusted_loadings(X)
 
             # Compute constraint residuals
             total_residual_norm = 0.0
@@ -279,11 +308,20 @@ class ConstrainedNipalsPLS:
             # Compute adjustment direction
             adjustment = self._compute_constraint_gradient(X, Y_pred)
 
-            # Apply damped update to Y loadings
-            damping = 0.1 / (1 + iteration * 0.1)  # Decreasing step size
-            self.results_.y_loadings = (
-                self.results_.y_loadings - damping * adjustment
-            )
+            # Apply damped update to Y loadings with gradient normalization
+            # Normalize gradient to prevent large updates that destroy predictions
+            grad_norm = np.sqrt(np.sum(adjustment**2))
+            if grad_norm > 1e-10:
+                # Use small step relative to current loadings magnitude
+                loading_scale = np.sqrt(np.sum(self.results_.y_loadings**2))
+                max_step = 0.01 * loading_scale  # Max 1% change per iteration
+                step_size = min(0.1 / (1 + iteration * 0.1), max_step / grad_norm)
+                self.results_.y_loadings = (
+                    self.results_.y_loadings - step_size * adjustment
+                )
+
+            # Recompute regression vector with updated y_loadings
+            self._recompute_regression_vector()
 
     def _compute_constraint_gradient(
         self,
@@ -324,16 +362,36 @@ class ConstrainedNipalsPLS:
 
         return gradient
 
-    def _predict_internal(self, X: NDArray[np.floating]) -> NDArray[np.floating]:
-        """Internal prediction using current loadings (no mean restoration)."""
-        if self.results_ is None:
+    def _predict_with_adjusted_loadings(self, X: NDArray[np.floating]) -> NDArray[np.floating]:
+        """
+        Predict using adjusted y_loadings via score-based computation.
+
+        This is numerically stable because it matches open_nipals.predict():
+            Y_pred = scores @ B_inner @ Q'
+        where scores = transform(X) and Q may have been adjusted by constraints.
+        """
+        if self.results_ is None or self.base_pls_ is None:
             raise ValueError("Model not fitted.")
 
+        # Get scores via transform (numerically stable)
         scores = self.base_pls_.transform(X)
         if isinstance(scores, tuple):
             scores = scores[0]
 
-        return scores @ self.results_.regression_matrix @ self.results_.y_loadings.T
+        # Use the (potentially adjusted) y_loadings
+        # Y_pred = T @ B_inner @ Q'
+        B_inner = self.results_.regression_matrix
+        Q = self.results_.y_loadings
+
+        return scores @ B_inner @ Q.T
+
+    def _predict_internal(self, X: NDArray[np.floating]) -> NDArray[np.floating]:
+        """Internal prediction using current loadings (for gradient computation)."""
+        if self.results_ is None:
+            raise ValueError("Model not fitted.")
+
+        # Always use score-based prediction for numerical stability
+        return self._predict_with_adjusted_loadings(X)
 
     def transform(
         self,
@@ -378,19 +436,22 @@ class ConstrainedNipalsPLS:
 
         Note
         ----
-        Currently uses base PLS prediction. The constraint adjustments to
-        y_loadings are tracked in results_.constraint_residuals but do not
-        yet modify predictions. This is a known limitation - constraint
-        optimization primarily serves as a diagnostic during fitting.
-
-        TODO: Implement proper loading propagation for constrained predictions.
-        The challenge is that the regression vector B = W(P'W)^-1 Q' needs
-        to be recomputed when Q (y_loadings) is adjusted.
+        If constraints were applied during fitting, predictions use the
+        adjusted y_loadings via score-based computation:
+            Y_pred = scores @ B_inner @ Q'
+        where Q has been adjusted to satisfy physical constraints.
+        This is numerically stable for ill-conditioned data.
         """
         if self.base_pls_ is None or self.results_ is None:
             raise ValueError("Model not fitted. Call fit() first.")
 
-        return self.base_pls_.predict(X)
+        # If constraints were applied, use adjusted loadings via scores
+        if self.results_.regression_vector is not None:
+            return self._predict_with_adjusted_loadings(X)
+        else:
+            # No constraints - use base PLS prediction (which is equivalent
+            # to score-based prediction with original y_loadings)
+            return self.base_pls_.predict(X)
 
     def fit_transform(
         self,
