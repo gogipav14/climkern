@@ -14,7 +14,6 @@ ClimKern-Retune implements a data-driven approach to radiative kernel estimation
 - **Observational training** using CERES surface fluxes + AIRS atmospheric profiles
 - **Q² cross-validation** for model selection and component optimization
 - **Validated implementation** with 95.5% test pass rate (42/44 tests)
-- **Predictive skill** demonstrated with R² > 0.94 for LW, R² > 0.72 for SW radiation
 
 ### Mathematical Framework
 
@@ -256,32 +255,51 @@ The JAX-NIPALS implementation has been thoroughly validated with a comprehensive
 
 *\*PCA numerical precision tests have ~1e-6 tolerance differences (expected behavior)*
 
-### Predictive Analysis Results (2023 Test Year)
+### Scientific Validation (Required Before Use)
 
-Using CERES/AIRS-style radiative flux data with temporal train/test split:
+**⚠️ Important:** The algorithm implementation has been validated (42/44 unit tests pass), but scientific validation against real climate data is **pending**. The included `predictive_analysis_real_data.py` falls back to synthetic data when the NASA POWER API is unavailable.
 
-| Metric | SW Downwelling | LW Downwelling |
-|--------|----------------|----------------|
-| **R²** | 0.720 | 0.947 |
-| **RMSE** | 29.2 W/m² | 12.3 W/m² |
-| **Bias** | -0.55 W/m² | +0.35 W/m² |
+**To properly validate this implementation, you must:**
 
-**Overall Test Q² = 0.83** (Training Q² = 0.82)
+1. **Use Independent Observational Data**
+   - Download real CERES EBAF data from [NASA Earthdata](https://earthdata.nasa.gov/)
+   - Download real AIRS L3 profiles from [GES DISC](https://disc.gsfc.nasa.gov/)
+   - The synthetic fallback data embeds trivial relationships and should **not** be used for validation
 
-The model demonstrates:
-- Strong predictive skill for longwave radiation (R² > 0.94)
-- Good skill for shortwave with higher natural variability (R² > 0.72)
-- No overfitting (test Q² ≈ training Q²)
-- Minimal systematic bias (< 1 W/m²)
+2. **Compare Against Traditional Radiative Kernels**
+   ```python
+   # The NIPALS-PLS kernels should agree with established kernels:
+   # - Soden et al. (2008) - Journal of Climate
+   # - Shell et al. (2008) - Journal of Climate
+   # - Huang et al. (2017) - Journal of Climate
 
-### Validation Approach
+   # Expected Planck feedback: ~-3.2 W/m²/K
+   # If learned kernel differs significantly, investigate why
+   ```
 
-- Compare Q² between standard 17-level and adaptive vertical resolution
-- Validate against IPCC AR6 assessed feedback ranges
-- Test extrapolation to 4×CO2 scenarios
-- Cross-validate with temporal splits (train: 2018-2022, test: 2023)
+3. **Check Physical Consistency**
+   - Planck feedback should be **negative** (~-3.2 W/m²/K at surface)
+   - Water vapor feedback should be **positive** (~1.8 W/m²/K)
+   - Kernel magnitude should decrease with altitude
+   - Stronger response near equator than poles
 
-See `VALIDATION_REPORT.md` for detailed findings.
+4. **Out-of-Sample Testing**
+   - Temporal holdout: Train on 2003-2018, test on 2019-2023
+   - Event-based: Test on volcanic eruptions (Pinatubo), El Niño events
+   - Model-based: Compare with CMIP6 4xCO2 experiments
+
+### Validation Checklist
+
+| Validation Step | Status | Notes |
+|-----------------|--------|-------|
+| Unit tests pass | ✅ 42/44 | PCA precision tests are expected failures |
+| Constraint propagation works | ✅ | Score-based prediction implemented |
+| Real CERES/AIRS data tested | ❌ Pending | Requires NASA Earthdata access |
+| Compared to Soden kernels | ❌ Pending | |
+| Physical sign/magnitude correct | ❌ Pending | |
+| Out-of-sample prediction | ❌ Pending | |
+
+See `VALIDATION_REPORT.md` for algorithm validation details.
 
 ## Generated Outputs
 

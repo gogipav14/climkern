@@ -202,11 +202,25 @@ $ pytest tests/test_jax_nipals_validation.py -v
 
 ## Conclusion
 
-The codebase is now **ready for sharing** with upstream developers. The critical import issues have been fixed, the README accurately reflects the API, and the test suite validates the implementation at 95.5% pass rate.
+The **algorithm implementation** is ready for review. The critical import issues have been fixed, constraint propagation to predictions works correctly, and the test suite validates the implementation at 95.5% pass rate.
 
-**Remaining items are minor** and can be addressed in future iterations:
+### What Has Been Validated ✅
+- NIPALS-PLS algorithm correctness (vs sklearn)
+- Constraint optimization mechanics
+- Numerical stability for ill-conditioned data
+- API consistency and imports
+
+### What Has NOT Been Validated ❌
+- Scientific accuracy against real CERES/AIRS data
+- Comparison with traditional radiative kernels (Soden, Shell)
+- Physical consistency of learned kernels
+- Out-of-sample prediction skill
+
+**Important:** The R² and Q² scores in `results/` are from **synthetic data** that embeds trivial relationships. These scores prove nothing about real-world performance and should not be cited.
+
+### Remaining Code Issues (Minor)
 - Replace hardcoded paths with proper package installation
 - Replace `print` with `logging`
 - Fix deprecated `np.trapz` usage
 
-**Recommendation:** ✅ Ready to share with imitevski and tyfolino.
+**Recommendation:** Share with imitevski and tyfolino with the caveat that **scientific validation with real data is required** before any publication or operational use.
