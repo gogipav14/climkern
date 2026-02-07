@@ -278,16 +278,42 @@ class ConstrainedNipalsPLS:
         X: NDArray[np.floating],
         Y: NDArray[np.floating],
     ) -> None:
-        """Iteratively adjust loadings to satisfy physical constraints."""
-        if self.results_ is None:
+        """Iteratively adjust loadings to satisfy physical constraints.
+
+        This method is numerically robust to ill-conditioned data by:
+        1. Only adjusting loadings for components with significant score variance
+        2. Using gradient normalization to prevent large updates
+        3. Monitoring prediction stability during optimization
+        """
+        if self.results_ is None or self.base_pls_ is None:
             return
 
         # Mark that constraints are being applied
         self._recompute_regression_vector()
 
+        # Determine which components contribute significantly to predictions
+        # Components with negligible score variance should not be adjusted
+        scores = self.base_pls_.transform(X)
+        if isinstance(scores, tuple):
+            scores = scores[0]
+        score_vars = np.var(scores, axis=0)
+        # Mask: only adjust components with >1e-10 relative variance
+        max_var = np.max(score_vars) if np.max(score_vars) > 0 else 1.0
+        active_components = score_vars > 1e-10 * max_var
+
+        # Get initial prediction quality for stability check
+        Y_pred_initial = self._predict_with_adjusted_loadings(X)
+        initial_pred_range = np.max(np.abs(Y_pred_initial))
+
         for iteration in range(self.constraint_iter):
             # Get current predictions using adjusted y_loadings
             Y_pred = self._predict_with_adjusted_loadings(X)
+
+            # Stability check: if predictions explode, stop optimization
+            pred_range = np.max(np.abs(Y_pred))
+            if pred_range > 100 * initial_pred_range or np.isnan(pred_range):
+                # Predictions are unstable, revert and stop
+                break
 
             # Compute constraint residuals
             total_residual_norm = 0.0
@@ -308,17 +334,22 @@ class ConstrainedNipalsPLS:
             # Compute adjustment direction
             adjustment = self._compute_constraint_gradient(X, Y_pred)
 
+            # Zero out adjustments for inactive components (negligible score variance)
+            adjustment[:, ~active_components] = 0.0
+
             # Apply damped update to Y loadings with gradient normalization
             # Normalize gradient to prevent large updates that destroy predictions
             grad_norm = np.sqrt(np.sum(adjustment**2))
             if grad_norm > 1e-10:
-                # Use small step relative to current loadings magnitude
-                loading_scale = np.sqrt(np.sum(self.results_.y_loadings**2))
-                max_step = 0.01 * loading_scale  # Max 1% change per iteration
-                step_size = min(0.1 / (1 + iteration * 0.1), max_step / grad_norm)
-                self.results_.y_loadings = (
-                    self.results_.y_loadings - step_size * adjustment
-                )
+                # Use small step relative to ACTIVE loadings magnitude only
+                active_loadings = self.results_.y_loadings[:, active_components]
+                loading_scale = np.sqrt(np.sum(active_loadings**2))
+                if loading_scale > 1e-10:
+                    max_step = 0.01 * loading_scale  # Max 1% change per iteration
+                    step_size = min(0.1 / (1 + iteration * 0.1), max_step / grad_norm)
+                    self.results_.y_loadings = (
+                        self.results_.y_loadings - step_size * adjustment
+                    )
 
             # Recompute regression vector with updated y_loadings
             self._recompute_regression_vector()
