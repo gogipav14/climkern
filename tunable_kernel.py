@@ -17,6 +17,8 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
+from backend import to_numpy
+
 # Ensure root directory is in path for imports
 _root_dir = os.path.dirname(os.path.abspath(__file__))
 if _root_dir not in sys.path:
@@ -100,8 +102,10 @@ class VerticalKernelProfile:
         # Pressure-weighted integral (dp in hPa, kernel in W/m²/K or W/m²/(g/kg))
         dp = np.gradient(self.pressure_levels)
 
-        t_integrated = np.trapz(self.temperature_kernel, self.pressure_levels)
-        q_integrated = np.trapz(self.humidity_kernel, self.pressure_levels)
+        # Use np.trapezoid (NumPy 2.0+) with fallback to np.trapz
+        _trapz = getattr(np, "trapezoid", np.trapz)
+        t_integrated = _trapz(self.temperature_kernel, self.pressure_levels)
+        q_integrated = _trapz(self.humidity_kernel, self.pressure_levels)
 
         return t_integrated, q_integrated
 
@@ -262,7 +266,7 @@ class TunableKernel:
             raise ValueError("Kernel not fitted. Call fit() first.")
 
         X = np.asarray(X, dtype=np.float64)
-        Y_pred = self.pls_model_.predict(X)
+        Y_pred = to_numpy(self.pls_model_.predict(X))
 
         # Parse outputs
         if Y_pred.ndim == 1:

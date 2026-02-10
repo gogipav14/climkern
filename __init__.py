@@ -41,6 +41,8 @@ NIPALS algorithm: Wold, S., et al. (2001). PLS-regression: a basic tool of chemo
 Radiative kernels: Soden, B.J., et al. (2008). Quantifying climate feedbacks.
 """
 
+from backend import HAS_JAX
+
 from climkern_retune.core import (
     # NIPALS-PLS
     ConstrainedNipalsPLS,

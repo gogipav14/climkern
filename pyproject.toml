@@ -42,7 +42,7 @@ dependencies = [
     "matplotlib>=3.4",
     "cartopy>=0.20",
     "dask>=2021.10",
-    "open_nipals @ git+https://github.com/gogipav14/open_nipals.git",
+    "open_nipals @ git+https://github.com/gogipav14/open_nipals.git@claude/convert-to-jax-FRO4Q",
     "pyyaml>=6.0",
 ]
 
@@ -54,6 +54,10 @@ dev = [
     "ruff>=0.1",
     "mypy>=1.0",
     "pre-commit>=2.0",
+]
+jax = [
+    "jax>=0.4.0",
+    "jaxlib>=0.4.0",
 ]
 docs = [
     "sphinx>=4.0",

@@ -20,6 +20,8 @@ from numpy.typing import NDArray
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 
+from backend import HAS_JAX, get_array_module, to_numpy
+
 
 class LatitudeBand(Enum):
     """Latitude band classification."""
@@ -364,32 +366,31 @@ class SIMCAClassifier:
         X_scaled = self.scaler_.fit_transform(X)
 
         # Build PCA model for each regime
+        xp = get_array_module()
         unique_regimes = np.unique(regime_ids)
 
         for regime_id in unique_regimes:
             mask = regime_ids == regime_id
-            X_regime = X_scaled[mask]
+            X_regime = xp.asarray(X_scaled[mask])
 
             if len(X_regime) < self.n_components + 1:
-                # Not enough samples for this regime
                 continue
 
-            # Fit PCA via SVD
-            mean = X_regime.mean(axis=0)
+            # Fit PCA via SVD (accelerated by JAX when available)
+            mean = xp.mean(X_regime, axis=0)
             X_centered = X_regime - mean
-            U, S, Vt = np.linalg.svd(X_centered, full_matrices=False)
+            U, S, Vt = xp.linalg.svd(X_centered, full_matrices=False)
 
-            # Store model components
             n_comp = min(self.n_components, len(S))
             self.regime_models_[int(regime_id)] = {
-                "mean": mean,
-                "loadings": Vt[:n_comp].T,  # (n_features, n_components)
-                "singular_values": S[:n_comp],
+                "mean": to_numpy(mean),
+                "loadings": to_numpy(Vt[:n_comp].T),  # (n_features, n_components)
+                "singular_values": to_numpy(S[:n_comp]),
                 "n_samples": len(X_regime),
             }
 
             # Compute Q-residual limit (based on eigenvalue distribution)
-            eigenvalues = S**2 / (len(X_regime) - 1)
+            eigenvalues = to_numpy(S**2) / (len(X_regime) - 1)
             theta1 = np.sum(eigenvalues[n_comp:])
             theta2 = np.sum(eigenvalues[n_comp:] ** 2)
             theta3 = np.sum(eigenvalues[n_comp:] ** 3)
@@ -428,38 +429,39 @@ class SIMCAClassifier:
         proba : ndarray of shape (n_samples, n_regimes)
             Probability for each regime (columns ordered by regime_id).
         """
+        xp = get_array_module()
         X = np.asarray(X)
-        X_scaled = self.scaler_.transform(X)
+        X_scaled = xp.asarray(self.scaler_.transform(X))
 
         regime_ids = sorted(self.regime_models_.keys())
         n_samples = len(X)
         n_regimes = len(regime_ids)
 
-        # Compute distances to each regime
-        distances = np.zeros((n_samples, n_regimes))
+        distances = xp.zeros((n_samples, n_regimes))
 
         for j, regime_id in enumerate(regime_ids):
             model = self.regime_models_[regime_id]
             limit = self.regime_limits_[regime_id]
 
-            # Project onto regime model
-            X_centered = X_scaled - model["mean"]
-            scores = X_centered @ model["loadings"]
-            X_reconstructed = scores @ model["loadings"].T
+            X_centered = X_scaled - xp.asarray(model["mean"])
+            loadings = xp.asarray(model["loadings"])
+            scores = X_centered @ loadings
+            X_reconstructed = scores @ loadings.T
             residuals = X_centered - X_reconstructed
 
-            # Q-residual (squared distance to model)
-            q_residuals = np.sum(residuals**2, axis=1)
+            q_residuals = xp.sum(residuals**2, axis=1)
 
-            # Normalize by limit
-            distances[:, j] = q_residuals / limit if limit > 0 else q_residuals
+            if HAS_JAX:
+                distances = distances.at[:, j].set(
+                    q_residuals / limit if limit > 0 else q_residuals
+                )
+            else:
+                distances[:, j] = q_residuals / limit if limit > 0 else q_residuals
 
-        # Convert distances to probabilities (softmax-like)
-        # Lower distance = higher probability
         inv_distances = 1.0 / (1.0 + distances)
         proba = inv_distances / inv_distances.sum(axis=1, keepdims=True)
 
-        return proba
+        return to_numpy(proba)
 
     def predict(
         self,
