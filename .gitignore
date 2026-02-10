@@ -11,5 +11,12 @@ dist/
 *.nc
 .venv/
 nasa_token.txt
+paper/*.aux
+paper/*.log
+paper/*.out
+paper/*.pdf
+paper/*.bbl
+paper/*.blg
+paper/*.synctex*
 climkern/__init__.pyc
 climkern/util.pyc
