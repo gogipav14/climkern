@@ -1308,6 +1308,284 @@ def validate_real_data_kernel(data: dict) -> dict:
 
 
 # ============================================================
+# Step 1: Kernel Harmonization Tests (Tests 8-10)
+# ============================================================
+
+def _generate_multi_kernel_data(
+    n_samples: int = 1000,
+    n_kernels: int = 11,
+    seed: int = 42,
+) -> dict:
+    """
+    Generate synthetic data simulating 11 kernel sets predicting the same quantity.
+
+    Each kernel = true_signal + kernel-specific_bias + kernel-specific_noise,
+    mimicking how 11 RT models produce different ΔR predictions for the same
+    atmospheric perturbation.
+    """
+    rng = np.random.default_rng(seed)
+
+    # True TOA flux signal (what CERES would observe)
+    true_lw = 3.0 * rng.standard_normal(n_samples) + 2.0  # ΔR_LW
+    true_sw = 1.5 * rng.standard_normal(n_samples) - 0.5  # ΔR_SW
+
+    # Each kernel has different bias and noise (simulating model spread)
+    kernel_names = [
+        "BMRC", "CAM3", "CAM5", "CERES", "CloudSat",
+        "ECHAM6", "ECMWF-RRTM", "ERA5", "GFDL", "HadGEM2", "HadGEM3-GA7.1",
+    ][:n_kernels]
+
+    X_lw = np.zeros((n_samples, n_kernels))
+    X_sw = np.zeros((n_samples, n_kernels))
+
+    # Kernel-specific biases (some are systematically high, some low)
+    biases_lw = rng.normal(0, 0.8, n_kernels)
+    biases_sw = rng.normal(0, 0.5, n_kernels)
+
+    # Kernel-specific noise levels (some are noisier)
+    noise_scales = 0.3 + 0.4 * rng.uniform(size=n_kernels)
+
+    for k in range(n_kernels):
+        X_lw[:, k] = true_lw + biases_lw[k] + noise_scales[k] * rng.standard_normal(n_samples)
+        X_sw[:, k] = true_sw + biases_sw[k] + noise_scales[k] * rng.standard_normal(n_samples)
+
+    # Feature matrix: use total ΔR (LW + SW combined) from each kernel
+    X_total = X_lw + X_sw
+
+    # Target: observed ΔR (LW, SW separately)
+    Y = np.column_stack([true_lw, true_sw])
+
+    # Latitude for regime classification
+    latitude = np.rad2deg(np.arcsin(rng.uniform(-1, 1, n_samples)))
+    cloud_fraction = 0.5 + 0.2 * rng.standard_normal(n_samples)
+    cloud_fraction = np.clip(cloud_fraction, 0, 1)
+    lts_values = 15.0 + 5.0 * rng.standard_normal(n_samples)
+
+    return {
+        "X_total": X_total,  # (n_samples, n_kernels) — total ΔR per kernel
+        "X_lw": X_lw,
+        "X_sw": X_sw,
+        "Y": Y,              # (n_samples, 2) — observed [ΔR_LW, ΔR_SW]
+        "kernel_names": kernel_names,
+        "latitude": latitude,
+        "cloud_fraction": cloud_fraction,
+        "lts": lts_values,
+        "true_lw": true_lw,
+        "true_sw": true_sw,
+    }
+
+
+def validate_kernel_harmonization(mk_data: dict) -> dict:
+    """
+    Test 8: Kernel harmonization on multi-kernel data.
+
+    Validates:
+    - KernelHarmonizer fits on multi-kernel predictions
+    - Q² > simple mean of kernel predictions
+    - Harmonized prediction tracks true signal
+    """
+    print("\n" + "=" * 60)
+    print("Test 8: Kernel Harmonization (Step 1)")
+    print("=" * 60)
+
+    from kernel_harmonizer import KernelHarmonizer
+
+    X = mk_data["X_total"]
+    Y = mk_data["Y"]
+    kernel_names = mk_data["kernel_names"]
+    n = len(X)
+
+    # Train/test split
+    n_train = int(0.8 * n)
+    X_train, X_test = X[:n_train], X[n_train:]
+    Y_train, Y_test = Y[:n_train], Y[n_train:]
+
+    # Use only LW target for this test (column 0)
+    Y_train_lw = Y_train[:, 0:1]
+    Y_test_lw = Y_test[:, 0:1]
+
+    # Fit harmonizer (global, no regime routing)
+    harmonizer = KernelHarmonizer(n_components=3, use_state_dependent=False)
+
+    t0 = time.time()
+    harmonizer.fit(X_train, Y_train_lw, kernel_names)
+    fit_time = time.time() - t0
+
+    # Evaluate harmonized prediction
+    q2_harmonized = harmonizer.evaluate(X_test, Y_test_lw)
+    q2_simple_mean = harmonizer.evaluate_simple_mean(X_test, Y_test_lw)
+    q2_per_kernel = harmonizer.evaluate_per_kernel(X_test, Y_test_lw)
+
+    results = {
+        "q2_harmonized": q2_harmonized,
+        "q2_simple_mean": q2_simple_mean,
+        "q2_per_kernel": q2_per_kernel,
+        "fit_time": fit_time,
+        "n_kernels": len(kernel_names),
+    }
+
+    print(f"\n  Fit time: {fit_time:.2f}s")
+    print(f"  Kernel sets: {len(kernel_names)}")
+    print(f"\n  Q² Scores (test set):")
+    print(f"    Harmonized (PLS):     {q2_harmonized:.4f}")
+    print(f"    Simple mean:          {q2_simple_mean:.4f}")
+
+    best_kernel = max(q2_per_kernel, key=q2_per_kernel.get)
+    worst_kernel = min(q2_per_kernel, key=q2_per_kernel.get)
+    print(f"    Best individual:      {q2_per_kernel[best_kernel]:.4f} ({best_kernel})")
+    print(f"    Worst individual:     {q2_per_kernel[worst_kernel]:.4f} ({worst_kernel})")
+
+    # Harmonized should beat simple mean
+    beats_mean = q2_harmonized > q2_simple_mean
+    q2_positive = q2_harmonized > 0.5  # Should be well above chance
+    passed = beats_mean and q2_positive
+    results["passed"] = passed
+
+    print(f"\n  Harmonized > mean: {'YES' if beats_mean else 'NO'}")
+    print(f"  Q² > 0.5: {'YES' if q2_positive else 'NO'}")
+    print(f"\n{'PASSED' if passed else 'FAILED'}: Harmonized Q² = {q2_harmonized:.4f}")
+
+    return results
+
+
+def validate_spread_reduction(mk_data: dict) -> dict:
+    """
+    Test 9: Interkernel spread reduction after harmonization.
+
+    Validates:
+    - Standard deviation across 11 kernel predictions is non-trivial
+    - Harmonization reduces spread (residual < raw spread)
+    - Spread reduction is positive
+    """
+    print("\n" + "=" * 60)
+    print("Test 9: Interkernel Spread Reduction")
+    print("=" * 60)
+
+    from kernel_harmonizer import KernelHarmonizer
+
+    X = mk_data["X_total"]
+    Y = mk_data["Y"][:, 0:1]  # LW only
+    kernel_names = mk_data["kernel_names"]
+
+    # Fit harmonizer
+    harmonizer = KernelHarmonizer(n_components=3, use_state_dependent=False)
+    harmonizer.fit(X, Y, kernel_names)
+
+    # Compute RMSE reduction
+    rmse_before, rmse_after, reduction_pct = harmonizer.compute_spread_reduction(X, Y)
+
+    results = {
+        "rmse_before": rmse_before,
+        "rmse_after": rmse_after,
+        "rmse_reduction_pct": reduction_pct,
+    }
+
+    print(f"\n  Prediction RMSE (vs observations):")
+    print(f"    Mean individual kernel: {rmse_before:.4f} W/m²")
+    print(f"    Harmonized blend:       {rmse_after:.4f} W/m²")
+    print(f"    RMSE reduction:         {reduction_pct:.1f}%")
+
+    # Also show raw interkernel spread
+    raw_spread = float(np.nanstd(X, axis=1).mean())
+    print(f"\n  Raw interkernel spread (std across kernels): {raw_spread:.4f} W/m²")
+
+    # Kernel weights
+    weights = harmonizer.get_kernel_weights()
+    print(f"\n  Kernel Weights (PLS regression coefficients):")
+    for i, name in enumerate(kernel_names):
+        w = weights[i, 0] if weights.ndim > 1 else weights[i]
+        print(f"    {name:<20} {w:>+8.4f}")
+
+    # Pass criteria: RMSE reduction > 0
+    spread_exists = raw_spread > 0.1  # non-trivial interkernel spread
+    rmse_reduced = reduction_pct > 0
+    passed = spread_exists and rmse_reduced
+    results["passed"] = passed
+
+    print(f"\n  Interkernel spread exists (> 0.1): {'YES' if spread_exists else 'NO'}")
+    print(f"  RMSE reduced: {'YES' if rmse_reduced else 'NO'}")
+    print(f"\n{'PASSED' if passed else 'FAILED'}: RMSE reduced by {reduction_pct:.1f}%")
+
+    return results
+
+
+def validate_harmonized_vs_individual(mk_data: dict) -> dict:
+    """
+    Test 10: Harmonized Q² vs individual kernel Q².
+
+    Validates:
+    - Harmonized blend Q² >= median individual kernel Q²
+    - HarmonizedKernel wrapper produces same results as KernelHarmonizer
+    """
+    print("\n" + "=" * 60)
+    print("Test 10: Harmonized vs Individual Kernels")
+    print("=" * 60)
+
+    from tunable_kernel import HarmonizedKernel
+
+    X = mk_data["X_total"]
+    Y = mk_data["Y"][:, 0:1]
+    kernel_names = mk_data["kernel_names"]
+    n = len(X)
+
+    # Train/test split
+    n_train = int(0.8 * n)
+    X_train, X_test = X[:n_train], X[n_train:]
+    Y_train, Y_test = Y[:n_train], Y[n_train:]
+
+    # Test via HarmonizedKernel wrapper (same interface as TunableKernel)
+    hk = HarmonizedKernel(n_components=3)
+    hk.fit(X_train, Y_train, kernel_names=kernel_names)
+    q2_wrapper = hk.evaluate(X_test, Y_test)
+    output = hk.compute(X_test)
+
+    # Per-kernel Q² (each column of X as a standalone predictor)
+    q2_per_kernel = {}
+    ss_tot = np.sum((Y_test - Y_test.mean(axis=0)) ** 2)
+    for i, name in enumerate(kernel_names):
+        pred_i = X_test[:, i:i+1]
+        ss_res = np.sum((Y_test - pred_i) ** 2)
+        q2_per_kernel[name] = float(1.0 - ss_res / ss_tot) if ss_tot > 0 else 0.0
+
+    q2_values = list(q2_per_kernel.values())
+    median_q2 = float(np.median(q2_values))
+    mean_q2 = float(np.mean(q2_values))
+
+    results = {
+        "q2_harmonized": q2_wrapper,
+        "q2_per_kernel": q2_per_kernel,
+        "q2_median_individual": median_q2,
+        "q2_mean_individual": mean_q2,
+    }
+
+    print(f"\n  Harmonized Q² (wrapper):  {q2_wrapper:.4f}")
+    print(f"  Median individual Q²:     {median_q2:.4f}")
+    print(f"  Mean individual Q²:       {mean_q2:.4f}")
+
+    print(f"\n  Per-kernel Q² (test set):")
+    for name, q2 in sorted(q2_per_kernel.items(), key=lambda x: -x[1]):
+        marker = " <-- best" if q2 == max(q2_values) else ""
+        print(f"    {name:<20} {q2:>+8.4f}{marker}")
+
+    # Output check
+    print(f"\n  HarmonizedKernel output:")
+    print(f"    ΔR_LW mean: {output.delta_r_lw.mean():+.3f} W/m²")
+    print(f"    ΔR_net mean: {output.delta_r_net.mean():+.3f} W/m²")
+
+    # Pass: harmonized >= median individual
+    beats_median = q2_wrapper >= median_q2
+    output_valid = output.delta_r_lw.shape[0] == len(X_test)
+    passed = beats_median and output_valid
+    results["passed"] = passed
+
+    print(f"\n  Harmonized >= median: {'YES' if beats_median else 'NO'}")
+    print(f"  Output shape valid: {'YES' if output_valid else 'NO'}")
+    print(f"\n{'PASSED' if passed else 'FAILED'}: Harmonized Q² = {q2_wrapper:.4f} >= median {median_q2:.4f}")
+
+    return results
+
+
+# ============================================================
 # Main validation pipeline
 # ============================================================
 
@@ -1364,6 +1642,11 @@ def run_validation(
     # Run validation tests
     all_results = {}
 
+    # Tests 1-6: Synthetic data (Step 2: Data-driven kernels)
+    print("\n" + "=" * 60)
+    print("STEP 2 VALIDATION: Data-Driven Kernels (Synthetic)")
+    print("=" * 60)
+
     all_results["single_regime"] = validate_single_regime_kernel(data)
     all_results["multi_regime"] = validate_multi_regime_kernel(data)
     all_results["constraint_physics"] = validate_constraint_physics(data)
@@ -1375,6 +1658,16 @@ def run_validation(
     if real_data is not None:
         all_results["real_data"] = validate_real_data_kernel(real_data)
 
+    # Tests 8-10: Kernel Harmonization (Step 1)
+    print("\n" + "=" * 60)
+    print("STEP 1 VALIDATION: Kernel Harmonization")
+    print("=" * 60)
+
+    mk_data = _generate_multi_kernel_data(n_samples=n_samples, n_kernels=11)
+    all_results["kernel_harmonization"] = validate_kernel_harmonization(mk_data)
+    all_results["spread_reduction"] = validate_spread_reduction(mk_data)
+    all_results["harmonized_vs_individual"] = validate_harmonized_vs_individual(mk_data)
+
     # Summary
     print("\n" + "=" * 60)
     print("VALIDATION SUMMARY")
@@ -1383,11 +1676,25 @@ def run_validation(
     n_tests = len(all_results)
     n_passed = sum(1 for r in all_results.values() if r.get("passed", False))
 
-    print(f"\n  {'Test':<40} {'Result':>8}")
-    print("-" * 52)
-    for name, result in all_results.items():
-        status = "PASSED" if result.get("passed", False) else "FAILED"
-        print(f"  {name:<40} {status:>8}")
+    print(f"\n  {'Test':<45} {'Result':>8}")
+    print("-" * 57)
+
+    # Group by step
+    step2_tests = ["single_regime", "multi_regime", "constraint_physics",
+                   "vertical_profile", "jax_numpy", "feedback_magnitudes", "real_data"]
+    step1_tests = ["kernel_harmonization", "spread_reduction", "harmonized_vs_individual"]
+
+    print("  Step 2 (Data-Driven Kernels):")
+    for name in step2_tests:
+        if name in all_results:
+            status = "PASSED" if all_results[name].get("passed", False) else "FAILED"
+            print(f"    {name:<43} {status:>8}")
+
+    print("  Step 1 (Kernel Harmonization):")
+    for name in step1_tests:
+        if name in all_results:
+            status = "PASSED" if all_results[name].get("passed", False) else "FAILED"
+            print(f"    {name:<43} {status:>8}")
 
     print(f"\n  Total: {n_passed}/{n_tests} tests passed")
     print(f"  Backend: {'JAX' if HAS_JAX else 'NumPy'}")

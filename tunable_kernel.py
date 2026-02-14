@@ -736,3 +736,119 @@ def compare_vertical_resolutions(
         "adaptive_pls_q2_mean": np.mean(results["adaptive_pls_q2"]),
         "adaptive_pls_q2_std": np.std(results["adaptive_pls_q2"]),
     }
+
+
+# ---------------------------------------------------------------------------
+# Step 1: HarmonizedKernel — wrapper for KernelHarmonizer
+# ---------------------------------------------------------------------------
+
+
+class HarmonizedKernel:
+    """
+    Step 1 kernel: optimally weighted blend of pre-computed kernel sets.
+
+    Wraps KernelHarmonizer with the same interface as TunableKernel
+    (.fit(), .compute(), .evaluate()) for direct comparison between
+    Step 1 (kernel harmonization) and Step 2 (data-driven learning).
+
+    Parameters
+    ----------
+    n_components : int
+        Number of PLS components for kernel blending.
+    use_state_dependent : bool
+        Whether to use SIMCA regime routing.
+    constraints : list[PhysicalConstraint], optional
+        Physical constraints to enforce on the blend.
+    """
+
+    def __init__(
+        self,
+        n_components: int = 3,
+        use_state_dependent: bool = False,
+        constraints: list[PhysicalConstraint] | None = None,
+    ):
+        from kernel_harmonizer import KernelHarmonizer
+
+        self.harmonizer = KernelHarmonizer(
+            n_components=n_components,
+            use_state_dependent=use_state_dependent,
+            constraints=constraints,
+        )
+        self.kernel_names_: list[str] = []
+        self.is_fitted_: bool = False
+
+    def fit(
+        self,
+        X: NDArray[np.floating],
+        Y: NDArray[np.floating],
+        kernel_names: list[str] | None = None,
+        latitude: NDArray[np.floating] | None = None,
+        cloud_fraction: NDArray[np.floating] | None = None,
+        lts: NDArray[np.floating] | None = None,
+    ) -> HarmonizedKernel:
+        """
+        Fit using kernel predictions as features.
+
+        Parameters
+        ----------
+        X : array of shape (n_samples, n_kernels)
+            Each column is one kernel's ΔR prediction.
+        Y : array of shape (n_samples, n_targets)
+            Observed radiative flux changes.
+        kernel_names : list[str], optional
+            Names of kernel sets.
+        latitude, cloud_fraction, lts : arrays, optional
+            For state-dependent routing.
+        """
+        if kernel_names is None:
+            kernel_names = [f"kernel_{i}" for i in range(X.shape[1])]
+        self.kernel_names_ = kernel_names
+        self.harmonizer.fit(X, Y, kernel_names, latitude, cloud_fraction, lts)
+        self.is_fitted_ = True
+        return self
+
+    def compute(
+        self,
+        X: NDArray[np.floating],
+    ) -> KernelOutput:
+        """
+        Predict ΔR using optimally weighted kernel blend.
+
+        Parameters
+        ----------
+        X : array of shape (n_samples, n_kernels)
+
+        Returns
+        -------
+        output : KernelOutput
+        """
+        if not self.is_fitted_:
+            raise RuntimeError("HarmonizedKernel must be fitted first")
+
+        Y_pred = self.harmonizer.predict(X)
+
+        if Y_pred.shape[1] >= 2:
+            delta_r_lw = Y_pred[:, 0]
+            delta_r_sw = Y_pred[:, 1]
+        else:
+            delta_r_lw = Y_pred[:, 0]
+            delta_r_sw = np.zeros_like(delta_r_lw)
+
+        return KernelOutput(
+            delta_r_lw=delta_r_lw,
+            delta_r_sw=delta_r_sw,
+            delta_r_net=delta_r_lw + delta_r_sw,
+            contributions={name: np.array([0.0]) for name in self.kernel_names_},
+        )
+
+    def evaluate(
+        self,
+        X: NDArray[np.floating],
+        Y: NDArray[np.floating],
+    ) -> float:
+        """Return Q² score."""
+        return self.harmonizer.evaluate(X, Y)
+
+    def get_kernel_weights(self, regime_id: int | None = None) -> NDArray[np.floating]:
+        """Get per-kernel combination weights."""
+        return self.harmonizer.get_kernel_weights(regime_id)

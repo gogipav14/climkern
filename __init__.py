@@ -1,44 +1,45 @@
 """
-ClimKern-Retune: NIPALS-PLS Tunable Radiative Kernels for Climate Feedback Analysis
+ClimKern-Retune: From Kernel Harmonization to Data-Driven Tunable Radiative Kernels
 
-This package implements a data-driven approach to radiative kernel estimation
-using NIPALS-PLS regression with physical constraints and SIMCA-style state
-classification for regime-dependent kernels.
+A two-step extension of ClimKern v1.2 (Janoski et al. 2025):
+
+Step 1 — Kernel Harmonization:
+    Optimally combine the 11 pre-computed ClimKern kernel sets using
+    constrained NIPALS-PLS with SIMCA regime routing. Reduces interkernel
+    spread while preserving interpretability.
+
+Step 2 — Data-Driven Extension:
+    Learn tunable kernel sensitivities directly from atmospheric state
+    observations using the same PLS/SIMCA/constraint framework.
 
 Key Features
 ------------
-- NIPALS-PLS regression with missing data handling (via open_nipals)
-- Multi-level radiative constraints (surface Stefan-Boltzmann, TOA energy balance)
-- SIMCA-style climate state classification (latitude × cloud × stability)
-- Support for observational (CERES, AIRS) and model-based training
+- NIPALS-PLS regression with physical constraints (Stefan-Boltzmann, energy conservation)
+- SIMCA-style climate state classification (16 regimes)
+- Kernel harmonization (Step 1): optimal weighting of 11 ClimKern kernel sets
+- Data-driven kernels (Step 2): learned from CERES + NCEP observations
+- Dual JAX/NumPy backend with GPU acceleration and autodiff
 - Q² cross-validation for model selection
-- Validation against traditional radiative kernels
 
-Quick Start
------------
->>> from climkern_retune import TunableKernel, KernelConfig
->>> from climkern_retune.data import create_feature_matrix
->>>
->>> # Create and fit a tunable kernel
->>> config = KernelConfig(n_components=5)
->>> kernel = TunableKernel(config=config)
->>> kernel.fit(X_train, Y_train, feature_names=feature_names)
->>>
->>> # Compute radiative response
->>> output = kernel.compute(X_test)
->>> print(f"LW response: {output.delta_r_lw.mean():.2f} W/m²")
+Quick Start — Step 1 (Kernel Harmonization)
+--------------------------------------------
+>>> from kernel_harmonizer import KernelHarmonizer
+>>> harmonizer = KernelHarmonizer(n_components=3)
+>>> harmonizer.fit(X_kernels, Y_ceres, kernel_names=names)
+>>> q2 = harmonizer.evaluate(X_test, Y_test)
 
-For state-dependent kernels:
->>> from climkern_retune import MultiStateKernel, ClimateStateClassifier
->>>
->>> kernel = MultiStateKernel()
->>> kernel.fit(X, Y, latitude=lat, cloud_fraction=cf, lts=lts)
->>> output = kernel.compute(X_new, latitude=lat_new)
+Quick Start — Step 2 (Data-Driven Kernels)
+-------------------------------------------
+>>> from tunable_kernel import TunableKernel, KernelConfig
+>>> kernel = TunableKernel(config=KernelConfig(n_components=8))
+>>> kernel.fit(X_atm_state, Y_ceres, feature_names=features)
+>>> output = kernel.compute(X_new)
 
 References
 ----------
-NIPALS algorithm: Wold, S., et al. (2001). PLS-regression: a basic tool of chemometrics.
-Radiative kernels: Soden, B.J., et al. (2008). Quantifying climate feedbacks.
+Janoski, T.P. et al. (2025). ClimKern v1.2. Geosci. Model Dev., 18, 3065-3079.
+Wold, S. et al. (2001). PLS-regression: a basic tool of chemometrics.
+Soden, B.J. et al. (2008). Quantifying climate feedbacks using radiative kernels.
 """
 
 from backend import HAS_JAX
@@ -54,15 +55,21 @@ from climkern_retune.core import (
     ClimateState,
     compute_lts,
     compute_eis,
-    # Tunable kernels
+    # Tunable kernels (Step 2)
     TunableKernel,
     MultiStateKernel,
     KernelConfig,
     KernelOutput,
 )
 
-__version__ = "0.1.0"
-__author__ = "ClimKern-Retune Contributors"
+# Step 1: Kernel Harmonization
+from kernel_harmonizer import KernelHarmonizer, HarmonizationResult, MultiKernelLoader
+
+# Step 1 wrapper with TunableKernel-compatible interface
+from tunable_kernel import HarmonizedKernel
+
+__version__ = "0.2.0"
+__author__ = "Gorgi Pavlov"
 
 __all__ = [
     # Core PLS
@@ -75,7 +82,12 @@ __all__ = [
     "ClimateState",
     "compute_lts",
     "compute_eis",
-    # Tunable kernels
+    # Step 1: Kernel Harmonization
+    "KernelHarmonizer",
+    "HarmonizationResult",
+    "MultiKernelLoader",
+    "HarmonizedKernel",
+    # Step 2: Data-Driven Kernels
     "TunableKernel",
     "MultiStateKernel",
     "KernelConfig",

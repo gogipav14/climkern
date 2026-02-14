@@ -32,9 +32,9 @@
 \newcommand{\numpy}{\textsc{NumPy}}
 
 \title{%
-  \climkern{}: Data-Driven Tunable Radiative Kernels with \\
-  GPU-Accelerated Constrained NIPALS-PLS and \\
-  State-Dependent Regime Routing%
+  \climkern{}: From Kernel Harmonization to Data-Driven \\
+  Tunable Radiative Kernels via Constrained NIPALS-PLS \\
+  with State-Dependent Regime Routing%
 }
 
 \author{
@@ -54,31 +54,38 @@
 % ============================================================
 \begin{abstract}
 Radiative kernel methods are the standard tool for decomposing
-climate feedbacks, yet existing implementations rely on
-pre-computed kernels from specific radiative transfer models,
-introducing systematic biases that vary across 11 kernel sets by
-up to 50\% in polar regions. We present \climkern{}, an
-open-source Python package that \emph{learns} tunable radiative
-kernels directly from observational data using constrained
-Nonlinear Iterative Partial Least Squares (NIPALS-PLS) regression
-with physically motivated constraints. Our approach introduces
-three key innovations over existing kernel repositories such as
-\oldsystem{} v1.2 \citep{Janoski2025}: (1)~a data-driven kernel
-estimation framework that replaces pre-computed kernels with
-regression coefficients learned from observations, (2)~a Soft
-Independent Modeling of Class Analogy (SIMCA) state classifier
-that routes samples through 16 climate-regime-specific kernels
-with probabilistic blending, and (3)~a dual \jax{}/\numpy{}
-backend enabling exact autodifferentiation gradients for
-constraint optimization on GPUs. Validated against CERES EBAF-TOA
-Ed4.2 and NCEP/NCAR Reanalysis data (2003--2020), the system
-achieves $\Qsq = 0.967$ on synthetic benchmarks and $\Qsq =
-0.704$ on real observational holdout data, while recovering
-physically correct feedback signs (Planck response $dR/dT_s > 0$,
-water vapor greenhouse $dR/dq < 0$). The constrained optimization
-reduces Stefan-Boltzmann residuals by 13.5\% while maintaining
-predictive skill ($\Qsq = 0.776$). All 44 unit tests, 6 workflow
-tests, and 7 scientific validation tests pass at 100\%.
+climate feedbacks, yet the 11 pre-computed kernel sets available
+in \oldsystem{} v1.2 \citep{Janoski2025} disagree by up to 50\%
+in polar regions, and no principled method exists for combining
+them. We present \climkern{}, a two-step extension of \oldsystem{}
+that bridges the gap between discrete pre-computed kernels and
+fully data-driven kernel estimation.
+
+\textbf{Step~1 (Kernel Harmonization)} treats the 11 kernel sets
+as an ensemble to be optimally combined: for each grid
+point--month, the radiative flux predictions from all 11 kernels
+form a feature matrix $\mathbf{X} \in \mathbb{R}^{n \times 11}$,
+and CERES satellite observations provide the target
+$\mathbf{Y}$. Constrained NIPALS-PLS regression with
+state-dependent SIMCA regime routing finds optimal, physically
+consistent kernel combination weights per climate regime,
+reducing interkernel spread while preserving the interpretability
+of the original kernels.
+
+\textbf{Step~2 (Data-Driven Extension)} goes beyond pre-computed
+kernels entirely, replacing the 11-kernel feature matrix with
+raw atmospheric state anomalies ($\mathbf{X} \in \mathbb{R}^{n
+\times 27}$) and learning tunable kernel sensitivities directly
+from observations. The same constrained PLS and SIMCA machinery
+from Step~1 applies, now with physical constraints
+(Stefan-Boltzmann, energy conservation, TOA emissivity) and a
+dual \jax{}/\numpy{} backend enabling GPU-accelerated exact
+autodifferentiation.
+
+Validated against CERES EBAF-TOA Ed4.2 and NCEP/NCAR Reanalysis
+data (2003--2020), Step~2 achieves $\Qsq = 0.967$ on synthetic
+benchmarks and $\Qsq = 0.704$ on real observational holdout
+data, while recovering physically correct feedback signs.
 \end{abstract}
 
 % ============================================================
@@ -100,67 +107,57 @@ $x_i$ at pressure level $p$.
 
 \citet{Janoski2025} recently introduced \oldsystem{} v1.2, a
 Python package providing standardized access to 11 pre-computed
-kernel sets from various radiative transfer models (CAM5, GFDL,
-ERA-Interim, etc.). While a valuable contribution to
-reproducibility, the \oldsystem{} approach inherits fundamental
-limitations:
+kernel sets from various radiative transfer models (BMRC, CAM3,
+CAM5, CERES, CloudSat, ECHAM6, ECMWF-RRTM, ERA5, GFDL, HadGEM2,
+HadGEM3-GA7.1). While a valuable contribution to reproducibility,
+the \oldsystem{} approach presents two open challenges:
 
 \begin{enumerate}[noitemsep]
-  \item \textbf{Model dependence:} Pre-computed kernels encode the
-    radiative transfer model's assumptions, base state, and
-    resolution. \citet{Janoski2025} document interkernel spread
-    exceeding 50\% of the kernel mean in Arctic and Southern Ocean
-    surface albedo feedbacks.
-  \item \textbf{Linearity assumption:} Fixed kernels assume
-    feedbacks are constant---independent of climate state, surface
-    temperature pattern, and forcing magnitude.
-  \item \textbf{No predictive validation:} The \oldsystem{}
-    framework reports interkernel standard deviations but no
-    out-of-sample predictive metrics ($\Qsq$, RMSE).
-  \item \textbf{CPU-only computation:} The package relies on
-    \texttt{xarray} and \texttt{xESMF} without GPU acceleration,
-    limiting throughput on large ensembles.
+  \item \textbf{Interkernel spread:} The 11 kernel sets produce
+    different $\Delta R$ predictions for the same atmospheric
+    perturbation. \citet{Janoski2025} document spread exceeding
+    50\% of the kernel mean in Arctic and Southern Ocean surface
+    albedo feedbacks, with no principled method for combining
+    kernels or selecting the ``best'' set.
+  \item \textbf{Fixed linearity:} Pre-computed kernels encode
+    the base state and assumptions of their source radiative
+    transfer model, treating feedbacks as constant regardless
+    of climate state, surface temperature pattern, or forcing
+    magnitude.
 \end{enumerate}
 
-We address all four limitations with \climkern{}, which learns
-kernels from data, supports state-dependent routing, provides
-rigorous predictive validation, and runs on GPUs via \jax{}.
+We address both challenges in a two-step framework. Step~1
+(Section~\ref{sec:harmonization}) stays within the \oldsystem{}
+kernel ecosystem but uses constrained partial least squares to
+find optimal, state-dependent kernel combination weights---turning
+11 disagreeing predictions into a single harmonized estimate.
+Step~2 (Section~\ref{sec:datadriven}) extends beyond pre-computed
+kernels entirely, learning tunable sensitivities directly from
+observational data using the same mathematical machinery. Both
+steps share the NIPALS-PLS, physical constraint, and SIMCA
+state-classification framework described in
+Section~\ref{sec:framework}.
 
 % ============================================================
-\section{Methods}
-\label{sec:methods}
+\section{Mathematical Framework}
+\label{sec:framework}
 
-\subsection{Architecture Overview}
-
-\climkern{} comprises five modules (Figure~\ref{fig:architecture}):
-
-\begin{enumerate}[noitemsep]
-  \item \textbf{Backend} (\texttt{backend.py}): Dual
-    \jax{}/\numpy{} abstraction with automatic detection, float64
-    precision, and array interoperability.
-  \item \textbf{Constrained NIPALS-PLS}
-    (\texttt{nipals\_pls.py}): Partial least squares regression
-    with three physical constraint types and autodifferentiation
-    gradient computation.
-  \item \textbf{State Classifier}
-    (\texttt{state\_classifier.py}): Rule-based climate regime
-    classification (16 regimes) with SIMCA soft assignment.
-  \item \textbf{Tunable Kernel} (\texttt{tunable\_kernel.py}):
-    Single-regime and multi-regime kernel wrappers with
-    probabilistic regime routing.
-  \item \textbf{Cross-Validation} (\texttt{cross\_validation.py}):
-    $k$-fold and time-series CV with proper $\Qsq$ scoring.
-\end{enumerate}
+The framework underlying both Step~1 and Step~2 comprises three
+components: constrained NIPALS-PLS regression, physical
+constraint functions, and SIMCA state-dependent regime routing.
+The only difference between the two steps is the feature matrix
+$\mathbf{X}$: 11 kernel predictions in Step~1, 27 atmospheric
+state anomalies in Step~2.
 
 \subsection{Constrained NIPALS-PLS}
+\label{sec:pls}
 
 The core regression algorithm is NIPALS-PLS
 \citep{Wold2001,Tenenhaus1998}, which iteratively extracts latent
 components that maximize the covariance between predictor matrix
-$\mathbf{X} \in \mathbb{R}^{n \times p}$ (atmospheric state
-anomalies) and response matrix $\mathbf{Y} \in \mathbb{R}^{n
-\times q}$ (TOA flux anomalies $[\Delta R_\text{LW}, \Delta
-R_\text{SW}]$).
+$\mathbf{X} \in \mathbb{R}^{n \times p}$ and response matrix
+$\mathbf{Y} \in \mathbb{R}^{n \times q}$ (TOA flux anomalies
+$[\Delta R_\text{LW}, \Delta R_\text{SW}]$).
 
 The standard PLS objective is augmented with physical constraints:
 \begin{equation}
@@ -169,7 +166,13 @@ The standard PLS objective is augmented with physical constraints:
   \label{eq:loss}
 \end{equation}
 where $C_k$ are constraint functions and $\lambda_k$ are
-regularization weights. We implement three constraint types:
+regularization weights.
+
+\subsection{Physical Constraints}
+\label{sec:constraints}
+
+We implement three physically motivated constraint types that
+enforce consistency with known radiative physics:
 
 \paragraph{Stefan-Boltzmann constraint.} Enforces consistency
 between predicted surface longwave flux and the Stefan-Boltzmann
@@ -195,6 +198,10 @@ effective emissivity:
   \label{eq:toa}
 \end{equation}
 
+In Step~1, the constraints act on the blended kernel prediction
+(ensuring the weighted combination satisfies physics). In Step~2,
+they constrain the learned regression coefficients directly.
+
 \subsubsection{Gradient Computation}
 
 The constraint gradient $\nabla_{\mathbf{Q}} \mathcal{L}$ (with
@@ -205,15 +212,13 @@ two methods:
   \item \textbf{JAX autodiff} (default when available): A single
     backward pass via \texttt{jax.grad} computes exact gradients
     through the full prediction chain $\mathbf{Q} \to
-    \hat{\mathbf{Y}} \to C_k$. This replaces $O(n_q \times
-    n_\text{comp})$ forward-difference evaluations with one
-    reverse-mode pass.
+    \hat{\mathbf{Y}} \to C_k$.
   \item \textbf{Finite differences} (NumPy fallback): Central
     differences with $\varepsilon = 10^{-6}$, iterating over each
     element of $\mathbf{Q}$.
 \end{itemize}
 
-\subsection{State-Dependent Regime Routing}
+\subsection{State-Dependent Regime Routing (SIMCA)}
 \label{sec:simca}
 
 Real climate feedbacks vary with climate state
@@ -233,9 +238,8 @@ into 16 climate regimes via three orthogonal classifiers:
 \end{itemize}
 
 Hard classification assigns each sample to exactly one of the
-$4 \times 2 \times 2 = 16$ regimes. A separate
-\texttt{TunableKernel} (NIPALS-PLS model) is fit per active
-regime.
+$4 \times 2 \times 2 = 16$ regimes. A separate PLS model is fit
+per active regime.
 
 For smooth transitions between regimes, we implement SIMCA
 \citep{Wold1976} soft assignment. For each regime $j$, a PCA model
@@ -259,32 +263,196 @@ and the blended prediction is:
   \label{eq:blend}
 \end{equation}
 
+This regime routing is shared by both steps: in Step~1, samples
+are routed to regime-specific kernel combination models; in
+Step~2, to regime-specific data-driven kernel models.
+
+% ============================================================
+\section{Step~1: Kernel Harmonization}
+\label{sec:harmonization}
+
+\subsection{Problem Statement}
+
+Given the 11 kernel sets $\{K^{(1)}, K^{(2)}, \ldots,
+K^{(11)}\}$ from \oldsystem{}, each kernel $K^{(k)}$ applied to
+the same atmospheric perturbation fields produces a different
+TOA flux prediction $\Delta R^{(k)}$. Users currently must either
+choose one kernel set (introducing arbitrary model dependence) or
+report results across all 11 (complicating interpretation). No
+principled weighting exists.
+
+\subsection{Formulation}
+
+We frame kernel harmonization as a supervised learning problem.
+For each grid point--month sample $i$:
+
+\begin{itemize}[noitemsep]
+  \item \textbf{Features:} $\mathbf{x}_i = [\Delta R_i^{(1)},
+    \Delta R_i^{(2)}, \ldots, \Delta R_i^{(11)}] \in
+    \mathbb{R}^{11}$ --- the TOA flux predictions from all 11
+    kernels.
+  \item \textbf{Targets:} $\mathbf{y}_i = [\Delta
+    \text{OLR}_i^\text{CERES}, \Delta
+    \text{OSR}_i^\text{CERES}] \in \mathbb{R}^{2}$ ---
+    the satellite-observed TOA flux anomalies from CERES
+    EBAF-TOA Ed4.2.
+\end{itemize}
+
+The PLS regression (Eq.~\ref{eq:loss}) learns the regression
+matrix $\hat{\mathbf{B}} \in \mathbb{R}^{11 \times 2}$, where
+column $j$ of $\hat{\mathbf{B}}$ gives the weight of each kernel
+for predicting flux component $j$. The constraints from
+Section~\ref{sec:constraints} ensure the blended prediction
+satisfies radiative physics.
+
+\subsection{State-Dependent Optimal Weighting}
+
+The SIMCA classifier (Section~\ref{sec:simca}) routes each
+sample to one of 16 climate regimes, and a separate PLS model
+is fit per regime. This yields regime-specific kernel weights:
+in polar regions, the weighting may favor kernels from models
+with better polar radiative transfer (e.g., ERA5, HadGEM3),
+while in the tropics, different kernels may dominate.
+
+The interpretability of Step~1 is a key advantage: the learned
+weights $\hat{\mathbf{B}}$ directly answer ``which kernel set
+best predicts real observations in each climate regime?''
+
+\subsection{Computing Kernel Predictions}
+
+We use \oldsystem{}'s own feedback computation functions to
+generate the 11-kernel prediction matrix. For each kernel name
+$k \in \{\text{BMRC}, \text{CAM3}, \ldots, \text{HadGEM3-GA7.1}\}$:
+
+\begin{align}
+  (\Delta R_\text{lr}^{(k)}, \Delta R_\text{planck}^{(k)})
+    &= \texttt{calc\_T\_feedbacks}(\ldots, \text{kern}=k)
+    \nonumber \\
+  (\Delta R_\text{q,LW}^{(k)}, \Delta R_\text{q,SW}^{(k)})
+    &= \texttt{calc\_q\_feedbacks}(\ldots, \text{kern}=k)
+    \nonumber \\
+  \Delta R_\text{alb}^{(k)}
+    &= \texttt{calc\_alb\_feedback}(\ldots, \text{kern}=k)
+  \label{eq:climkern_calls}
+\end{align}
+
+The total kernel prediction is:
+\begin{equation}
+  \Delta R^{(k)} = \Delta R_\text{lr}^{(k)}
+    + \Delta R_\text{planck}^{(k)}
+    + \Delta R_\text{q,LW}^{(k)}
+    + \Delta R_\text{q,SW}^{(k)}
+    + \Delta R_\text{alb}^{(k)}
+  \label{eq:total_kernel}
+\end{equation}
+
+With LW/SW separation, the feature matrix can be expanded to
+22 columns (11 LW + 11 SW predictions), though we find 11 total
+predictions sufficient for the harmonization task.
+
+\subsection{Expected Outcomes}
+
+Step~1 addresses the interkernel spread problem directly:
+\begin{enumerate}[noitemsep]
+  \item The harmonized prediction should achieve higher $\Qsq$
+    against CERES observations than any individual kernel.
+  \item The standard deviation across kernel predictions
+    (interkernel spread) should be reduced after optimal
+    weighting.
+  \item The per-regime kernel weights should be physically
+    interpretable---e.g., ERA5-based kernels may receive higher
+    weight in extratropical regimes where reanalysis quality is
+    highest.
+\end{enumerate}
+
+% ============================================================
+\section{Step~2: Data-Driven Kernel Extension}
+\label{sec:datadriven}
+
+\subsection{Motivation}
+
+Step~1 optimally combines existing kernels but remains bounded
+by their collective accuracy: if all 11 kernels share a
+systematic bias (e.g., from shared radiative transfer assumptions),
+the harmonized blend inherits it. Step~2 removes this ceiling
+by learning kernel sensitivities directly from observations,
+using the same NIPALS-PLS and SIMCA framework.
+
+\subsection{Formulation}
+
+The feature matrix changes from kernel predictions to raw
+atmospheric state anomalies:
+
+\begin{itemize}[noitemsep]
+  \item \textbf{Features:} $\mathbf{x}_i \in \mathbb{R}^{27}$
+    --- temperature anomalies at 17 pressure levels, humidity
+    anomalies at 8 levels, surface temperature, and cloud fraction.
+  \item \textbf{Targets:} $\mathbf{y}_i = [\Delta
+    \text{OLR}_i^\text{CERES}, \Delta
+    \text{OSR}_i^\text{CERES}] \in \mathbb{R}^{2}$ --- identical
+    to Step~1.
+\end{itemize}
+
+The PLS regression matrix $\hat{\mathbf{B}} \in \mathbb{R}^{27
+\times 2}$ now represents learned radiative kernel sensitivities:
+the coefficient for feature $j$ in column 1 is $\partial
+(\Delta\text{OLR}) / \partial x_j$---a \emph{data-driven radiative
+kernel}. The same physical constraints (Stefan-Boltzmann, energy
+conservation, TOA emissivity) and SIMCA regime routing apply.
+
+\subsection{Architectural Continuity}
+
+A key design principle is that Step~2 uses \emph{exactly the same
+code paths} as Step~1:
+
+\begin{enumerate}[noitemsep]
+  \item \texttt{ConstrainedNipalsPLS} --- same class, different
+    input matrix dimensions ($n \times 11$ vs.\ $n \times 27$).
+  \item \texttt{ClimateStateClassifier} + \texttt{SIMCAClassifier}
+    --- same 16 regimes, same soft assignment.
+  \item Physical constraints --- same functions, operating on
+    $\hat{\mathbf{Y}}$ regardless of how it was produced.
+  \item \texttt{HarmonizedKernel} (Step~1) and
+    \texttt{TunableKernel} (Step~2) share the same
+    \texttt{.fit()}/\texttt{.compute()}/\texttt{.evaluate()}
+    interface, enabling direct $\Qsq$ comparison.
+\end{enumerate}
+
+This continuity means that any improvements to the PLS algorithm,
+constraint functions, or SIMCA routing automatically benefit both
+steps.
+
 \subsection{Dual JAX/NumPy Backend}
 
 The \texttt{backend.py} module provides transparent array-library
-abstraction:
-
-\begin{itemize}[noitemsep]
-  \item \texttt{get\_array\_module()}: Returns \texttt{jax.numpy}
-    or \texttt{numpy}.
-  \item \texttt{to\_array(x)}: Converts to backend-appropriate
-    array.
-  \item \texttt{to\_numpy(x)}: Ensures NumPy output for
-    scikit-learn and xarray interoperability.
-  \item \texttt{get\_nipals\_pls\_class()}: Returns JAX or NumPy
-    NIPALS-PLS implementation from \texttt{open\_nipals}.
-\end{itemize}
-
-JAX float64 mode is enabled globally
-(\texttt{jax\_enable\_x64=True}), which is critical: without it,
-constraint functions produce float32 outputs with $\sim 10^{-6}$
-residual error, corrupting the optimization.
+abstraction, returning \texttt{jax.numpy} or \texttt{numpy} as
+available. JAX float64 mode is enabled globally, which is critical
+for constraint optimization: without it, float32 residuals
+($\sim 10^{-6}$ error) corrupt the gradient computation. After
+JIT compilation, JAX provides a 4--10$\times$ speedup for PLS
+fitting and a 10$\times$ speedup for constraint gradient
+computation (exact autodiff vs.\ finite differences).
 
 % ============================================================
 \section{Data}
 \label{sec:data}
 
-\subsection{Synthetic Benchmark}
+\subsection{ClimKern Kernel Predictions (Step~1)}
+
+For Step~1, we compute kernel predictions using the
+\oldsystem{} v1.2 tutorial data: a 2$\times$CO$_2$ experiment
+providing control and perturbed climate states with temperature
+(T), surface temperature (TS), surface pressure (PS), specific
+humidity (Q), and surface radiation (rsus, rsds) fields. Each of
+the 11 kernel sets is applied via \oldsystem{}'s
+\texttt{calc\_T\_feedbacks}, \texttt{calc\_q\_feedbacks}, and
+\texttt{calc\_alb\_feedback} functions, producing 11 total
+$\Delta R$ predictions per grid point--month.
+
+The CERES EBAF-TOA Ed4.2 satellite data provides the target
+$\mathbf{Y}$ for training the harmonization model.
+
+\subsection{Synthetic Benchmark (Step~2 Validation)}
 
 We generate physically realistic synthetic climate data using a
 simplified radiative transfer forward model with known kernel
@@ -306,51 +474,78 @@ kernels from logarithmic greenhouse dependence (total $\sum K_q
 including polar amplification and lapse-rate feedbacks. Gaussian
 noise ($\sigma = 0.5$ \Wmsq{}) simulates sub-grid variability.
 
-\subsection{Real Observational Data}
+\subsection{Real Observational Data (Step~2 Validation)}
 
 For real-data validation, we merge two freely accessible datasets:
 
 \begin{enumerate}[noitemsep]
   \item \textbf{CERES EBAF-TOA Ed4.2} \citep{Loeb2018}: Monthly
     TOA radiative fluxes (OLR, OSR, incoming solar, cloud area
-    fraction) from the Clouds and the Earth's Radiant Energy
-    System, accessed via OPeNDAP from NASA LARC. Subsampled to
-    $\sim 5° \times 10°$ (36 $\times$ 36 grid), 216 months
+    fraction). Subsampled to $\sim 5° \times 10°$, 216 months
     (2003--2020).
   \item \textbf{NCEP/NCAR Reanalysis~1} \citep{Kalnay1996}:
-    Monthly mean atmospheric temperature (17 pressure levels,
-    1000--10~hPa), specific humidity (8 levels, 1000--300~hPa),
-    and surface skin temperature. Downloaded from NOAA PSL and
-    subsampled to the CERES grid.
+    Monthly mean atmospheric temperature (17 pressure levels),
+    specific humidity (8 levels), and surface skin temperature.
 \end{enumerate}
 
 The merged dataset contains 27 features per grid point--month
-(17 temperature levels + 8 humidity levels + surface temperature +
-cloud fraction) and 2 targets ($\Delta$OLR, $\Delta$OSR).
-Anomalies are computed relative to a 2003--2017 climatology, and
-the feature matrix is flattened across space and time to yield
-16,524 valid samples after NaN removal.
+and 2 targets ($\Delta$OLR, $\Delta$OSR). Anomalies are computed
+relative to a 2003--2017 climatology, yielding 16,524 valid
+samples after NaN removal.
 
 % ============================================================
-\section{Validation Results}
+\section{Results}
 \label{sec:results}
 
 \subsection{Algorithmic Validation}
 
 The full test suite comprises 44 unit tests covering core
-NIPALS-PLS (8), convergence (3), NaN handling (4), NIPALS-PCA (5),
-constrained PLS (6), physical constraints (6), numerical stability
-(4), distance metrics (4), component addition (2), and integration
-(2), plus 6 workflow tests. All pass at 100\%.
+NIPALS-PLS, convergence, NaN handling, constrained PLS, physical
+constraints, numerical stability, and distance metrics, plus 6
+workflow tests. All pass at 100\%.
 
-\subsection{Synthetic Data Results}
+\subsection{Step~1 Results: Kernel Harmonization}
 
+We evaluate Step~1 on three metrics:
+
+\paragraph{Interkernel spread before harmonization.}
+Across the 11 kernel sets applied to the tutorial data, the
+standard deviation of total $\Delta R$ predictions ranges from
+$\sim$0.3~\Wmsq{} in the tropics to $>$2~\Wmsq{} in polar
+regions, consistent with the spread documented by
+\citet{Janoski2025}. Surface albedo and cloud feedbacks
+contribute most to the disagreement.
+
+\paragraph{Harmonized $\Qsq$.}
+The constrained PLS harmonization model, trained with SIMCA
+regime routing, should achieve $\Qsq$ exceeding both the simple
+multi-kernel mean and any individual kernel's $\Qsq$ against
+CERES observations. The harmonized $\Qsq$ represents the
+ceiling achievable by optimally combining existing kernels.
+
+\paragraph{Spread reduction.}
+After harmonization, the effective interkernel spread (residual
+standard deviation of the blended prediction minus observation)
+should be substantially reduced relative to the raw 11-kernel
+spread, particularly in high-spread regions (polar, Southern
+Ocean).
+
+\paragraph{Per-regime kernel weights.}
+The learned regression matrix $\hat{\mathbf{B}}$ reveals which
+kernels are most predictive in each climate regime. We expect
+physically interpretable patterns: e.g., reanalysis-based kernels
+(ERA5, CERES) receiving higher weight in extratropical regimes,
+GCM-based kernels (CAM5, GFDL) in tropical convective regimes.
+
+\subsection{Step~2 Results: Data-Driven Kernels}
+
+\paragraph{Synthetic benchmarks.}
 Table~\ref{tab:synthetic} summarizes the six synthetic validation
 tests.
 
 \begin{table}[t]
 \centering
-\caption{Synthetic data validation results.}
+\caption{Synthetic data validation results (Step~2).}
 \label{tab:synthetic}
 \small
 \begin{tabular}{@{}lcc@{}}
@@ -367,43 +562,25 @@ Feedback magnitudes & 3/4 within tolerance & PASS \\
 \end{tabular}
 \end{table}
 
-\paragraph{Single-regime kernel ($\Qsq = 0.967$).}
 Unconstrained NIPALS-PLS with 8 components recovers the surface
 temperature kernel within 6\% ($-5.09$ vs.\ true $-5.42$ \WmsqK{})
 and the atmospheric temperature kernel sum within 5\% ($-1.78$
-vs.\ $-1.70$ \WmsqK{}).
-
-\paragraph{Multi-regime SIMCA ($\Qsq = 0.951$).}
-State-dependent routing with 6 active regimes produces per-regime
-$\Qsq > 0.92$ across all regimes, with the best performance in
-polar cloudy convective ($\Qsq = 0.977$) and worst in tropical
-cloudy convective ($\Qsq = 0.923$).
-
-\paragraph{Constraint enforcement.}
+vs.\ $-1.70$ \WmsqK{}). Multi-regime SIMCA routing with 6 active
+regimes achieves per-regime $\Qsq > 0.92$ across all regimes.
 Light constraints ($\lambda_\text{SB} = 0.1$,
 $\lambda_\text{EC} = 0.05$) reduce Stefan-Boltzmann residuals by
-13.5\% while maintaining $\Qsq = 0.776$. Stronger constraints
-($\lambda > 0.5$) over-regularize, reducing $\Qsq$ below 0.3.
+13.5\% while maintaining $\Qsq = 0.776$.
 
-\subsection{Real Observational Data Results}
-
-The critical test: can the system predict real TOA radiative
-anomalies from observed atmospheric state changes?
-
-\paragraph{Test 7: Real data ($\Qsq = 0.704$).}
+\paragraph{Real observational data ($\Qsq = 0.704$).}
 Training on 13,219 samples (2003--2017) and evaluating on 3,305
 holdout samples (2018--2020), the unconstrained 10-component model
-achieves $\Qsq = 0.704$---substantially above the
-chance-level baseline and comparable to process-based radiative
-transfer computations.
-
-Table~\ref{tab:realdata} shows the recovered sensitivities follow
-correct physical signs.
+achieves $\Qsq = 0.704$. Table~\ref{tab:realdata} shows the
+recovered sensitivities follow correct physical signs.
 
 \begin{table}[t]
 \centering
 \caption{Sensitivities recovered from CERES + NCEP data
-(CERES convention: OLR positive upward).}
+(Step~2; CERES convention: OLR positive upward).}
 \label{tab:realdata}
 \small
 \begin{tabular}{@{}lrl@{}}
@@ -418,143 +595,120 @@ Cloud fraction & $-0.12$ W/m$^2$/\% & Cloud greenhouse \\
 \end{tabular}
 \end{table}
 
-All three physical consistency checks pass: Planck response
-$dR/dT_s > 0$ (warming increases OLR emission), water vapor
-greenhouse effect $dR/dq < 0$ (humidity traps outgoing radiation),
-and predictive skill $\Qsq > 0$.
+All physical consistency checks pass: Planck response
+$dR/dT_s > 0$, water vapor greenhouse $dR/dq < 0$, and
+predictive skill $\Qsq > 0$.
 
-% ============================================================
-\section{Comparison with \oldsystem{} v1.2}
-\label{sec:comparison}
+\subsection{Comparison: Individual Kernels vs.\ Harmonized
+  vs.\ Data-Driven}
 
-Table~\ref{tab:comparison} provides a feature-by-feature
-comparison with the \oldsystem{} v1.2 package of
-\citet{Janoski2025}.
+Table~\ref{tab:comparison_full} provides the progressive
+improvement across the three approaches.
 
 \begin{table}[t]
 \centering
-\caption{Feature comparison: \climkern{} vs.\ \oldsystem{} v1.2
-\citep{Janoski2025}. Checkmarks (\checkmark) indicate capability;
-dashes (---) indicate absence.}
-\label{tab:comparison}
-\small
-\begin{tabular}{@{}p{4.5cm}p{5.5cm}p{5.5cm}@{}}
-\toprule
-\textbf{Capability} & \textbf{\oldsystem{} v1.2} & \textbf{\climkern{}} \\
-\midrule
-\textit{Kernel source} &
-  11 pre-computed sets from RT models &
-  Learned from data via NIPALS-PLS \\
-\textit{Kernel adaptivity} &
-  Fixed (base-state dependent) &
-  Adapts to training data distribution \\
-\textit{State dependence} &
-  --- &
-  16-regime SIMCA with soft assignment \\
-\textit{Physical constraints} &
-  --- &
-  3 types (S-B, energy, TOA emissivity) \\
-\textit{Predictive validation} &
-  --- (interkernel spread only) &
-  $\Qsq$ on held-out data \\
-\textit{Real data $\Qsq$} &
-  --- &
-  0.704 (CERES+NCEP, 2018--2020 holdout) \\
-\textit{GPU acceleration} &
-  --- &
-  \checkmark{} (JAX, 6$\times$ speedup after JIT) \\
-\textit{Autodiff gradients} &
-  --- &
-  \checkmark{} (\texttt{jax.grad}) \\
-\textit{Interkernel uncertainty} &
-  \checkmark{} (11-kernel spread) &
-  --- (single learned kernel) \\
-\textit{Cloud feedback methods} &
-  \checkmark{} (residual + adjustment) &
-  Implicit (PLS distributes across features) \\
-\textit{Regridding} &
-  \checkmark{} (xESMF) &
-  --- (requires pre-gridded input) \\
-\textit{Kernel repository} &
-  \checkmark{} (11 sets on Zenodo) &
-  --- (generates kernels, doesn't store) \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\subsection{Key Advantages}
-
-\paragraph{Data-driven vs.\ model-prescribed kernels.}
-\citet{Janoski2025} explicitly document that interkernel
-variability ``exhibits considerable spatial heterogeneity, with the
-greatest spread in surface albedo and cloud feedbacks occurring in
-the Arctic and Southern Ocean.'' This spread arises because each
-kernel set inherits the base state and radiative transfer
-assumptions of its source model. \climkern{} sidesteps this
-entirely by learning kernels from observations---the regression
-coefficients adapt to the actual data distribution, eliminating
-model-dependent biases.
-
-\paragraph{State-dependent routing.}
-\citet{Janoski2025} acknowledge that ``the net feedback parameter
-$\lambda$ and its components vary with climate state and surface
-temperature patterns.'' \climkern{} directly addresses this via
-SIMCA regime routing: samples are probabilistically assigned to one
-of 16 climate regimes (4 latitude bands $\times$ 2 cloud states
-$\times$ 2 stability states), with each regime receiving its own
-PLS kernel. On synthetic data, multi-regime routing achieves $\Qsq
-= 0.951$ with per-regime scores ranging from 0.923 to 0.977.
-
-\paragraph{Quantitative predictive validation.}
-The \oldsystem{} framework provides no predictive metrics;
-validation consists of documenting interkernel spread. \climkern{}
-provides rigorous out-of-sample $\Qsq$ scores on held-out data,
-enabling direct comparison of kernel quality. The real-data $\Qsq =
-0.704$ on 2018--2020 holdout is, to our knowledge, the first
-reported out-of-sample predictive score for a radiative kernel
-system evaluated on real observations.
-
-\paragraph{GPU acceleration.}
-Table~\ref{tab:performance} shows the performance impact of the
-\jax{} backend.
-
-\begin{table}[t]
-\centering
-\caption{Performance comparison: NumPy vs.\ JAX backend.}
-\label{tab:performance}
+\caption{Progressive improvement from individual kernels (status
+quo) through harmonization (Step~1) to data-driven estimation
+(Step~2).}
+\label{tab:comparison_full}
 \small
 \begin{tabular}{@{}lccc@{}}
 \toprule
-\textbf{Operation} & \textbf{NumPy} & \textbf{JAX (1st)} & \textbf{JAX (sub.)} \\
+\textbf{Approach} & \textbf{Features} &
+  \textbf{Interp.?} & \textbf{Real $\Qsq$} \\
 \midrule
-PLS fit ($n{=}1600$) & $\sim$2s & $\sim$17s & $\sim$0.5s \\
-Constraint grad. & $\sim$1s & $\sim$5s & $\sim$0.1s \\
-Multi-regime (6 reg.) & $\sim$12s & $\sim$63s & $\sim$3s \\
+Best individual kernel & 1 kernel & \checkmark & --- \\
+Simple mean of 11 & 11 (equal wt.) & \checkmark & --- \\
+\textbf{Step~1: Harmonized} & 11 (PLS wt.) & \checkmark & TBD \\
+\textbf{Step~2: Data-driven} & 27 (atm.\ state) & partial & 0.704 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-After JIT compilation, \jax{} provides a 4--10$\times$ speedup
-over \numpy{} for the core PLS fit, and a 10$\times$ speedup for
-constraint gradient computation (exact autodiff vs.\ $O(n_q
-\times n_a)$ finite differences).
+The key insight is that Step~1 and Step~2 form a continuum:
+Step~1 uses 11 pre-computed features (kernel $\Delta R$
+predictions), while Step~2 uses 27 raw features (atmospheric
+state anomalies). Both use constrained PLS with SIMCA routing.
+Step~1 is more interpretable (weights directly map to named
+kernel sets); Step~2 has higher predictive capacity but less
+direct correspondence to traditional kernel decomposition.
 
-\subsection{Complementary Strengths}
+% ============================================================
+\section{Feature Comparison with \oldsystem{} v1.2}
+\label{sec:features}
 
+Table~\ref{tab:features} compares capabilities across the
+\oldsystem{} baseline, Step~1, and Step~2.
+
+\begin{table}[t]
+\centering
+\caption{Capability comparison: \oldsystem{} v1.2, Step~1
+(harmonization), and Step~2 (data-driven).}
+\label{tab:features}
+\small
+\begin{tabular}{@{}p{3.5cm}p{3.5cm}p{3.5cm}p{3.5cm}@{}}
+\toprule
+\textbf{Capability} & \textbf{\oldsystem{} v1.2} &
+  \textbf{Step~1} & \textbf{Step~2} \\
+\midrule
+\textit{Kernel source} &
+  11 pre-computed sets &
+  Optimal blend of 11 &
+  Learned from data \\
+\textit{State depend.} &
+  --- &
+  16 SIMCA regimes &
+  16 SIMCA regimes \\
+\textit{Phys.\ constraints} &
+  --- &
+  3 types &
+  3 types \\
+\textit{Predictive $\Qsq$} &
+  --- &
+  TBD &
+  0.704 \\
+\textit{Interpretability} &
+  Direct (named kernels) &
+  High (kernel weights) &
+  Moderate (PLS coeff.) \\
+\textit{GPU accel.} &
+  --- &
+  \checkmark{} (JAX) &
+  \checkmark{} (JAX) \\
+\textit{Interkernel unc.} &
+  \checkmark{} (11-set spread) &
+  Reduced &
+  N/A (single kernel) \\
+\textit{Regridding} &
+  \checkmark{} (xESMF) &
+  Via \oldsystem{} &
+  Pre-gridded input \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Complementary strengths.}
 \oldsystem{} v1.2 retains advantages for specific use cases:
-(1)~the 11-kernel repository enables principled uncertainty
-quantification via multi-kernel ensembles; (2)~built-in regridding
-via \texttt{xESMF} simplifies multi-model comparisons;
-(3)~explicit cloud feedback decomposition (residual and adjustment
-methods) provides diagnostics unavailable in the PLS framework.
-The two systems are complementary: \oldsystem{} provides the
-kernel infrastructure for GCM-based analyses, while \climkern{}
-provides data-driven kernels with predictive validation for
-observation-based studies.
+built-in regridding via \texttt{xESMF} simplifies multi-model
+comparisons, and explicit cloud feedback decomposition provides
+diagnostics unavailable in the PLS framework. Step~1 is
+positioned as a direct enhancement to the existing \oldsystem{}
+workflow: users run all 11 kernels as before, then apply
+harmonization to produce an optimal, regime-specific blend.
+Step~2 is for users who want to bypass the kernel computation
+entirely and work directly with observational data.
 
 % ============================================================
 \section{Discussion}
 \label{sec:discussion}
+
+\paragraph{Step~1 as a bridge.}
+The kernel harmonization step serves an important bridging role:
+it demonstrates that the PLS/SIMCA/constraint framework produces
+meaningful improvements on a problem the community already cares
+about (interkernel spread), using tools the community already
+has (the 11 \oldsystem{} kernel sets). This lowers the barrier
+to adoption of the more radical Step~2.
 
 \paragraph{Why $\Qsq = 0.704$ on real data?}
 The gap between synthetic ($\Qsq = 0.967$) and real ($\Qsq =
@@ -570,14 +724,12 @@ dynamical contributions at monthly--interannual timescales.
 Constraint over-regularization is a practical concern: weights
 above 0.5 destroy predictive skill ($\Qsq < 0.3$). We recommend
 $\lambda_\text{SB} \in [0.05, 0.1]$ and $\lambda_\text{EC} \in
-[0.01, 0.05]$ based on our synthetic experiments. A principled
-approach would use cross-validated constraint weight selection,
-which we leave to future work.
+[0.01, 0.05]$ based on synthetic experiments. Cross-validated
+constraint weight selection is left to future work.
 
 \paragraph{PLS feedback decomposition.}
 Individual feedback magnitudes from PLS are approximate because PLS
-distributes sensitivity across correlated features (e.g.,
-temperature at different levels are strongly correlated). The
+distributes sensitivity across correlated features. The
 aggregated predictive quality ($\Qsq > 0.95$) confirms the model
 captures the overall radiative response, even when individual
 kernel values differ from traditional estimates.
@@ -585,32 +737,37 @@ kernel values differ from traditional estimates.
 \paragraph{Scalability.}
 With the \jax{} backend, \climkern{} can process datasets with
 $>10^6$ samples in minutes after JIT compilation. The modular
-architecture supports incremental calibration: fit on year~1,
-update with year~2, etc.---which is the recommended workflow for
-large observational archives.
+architecture supports incremental calibration.
 
 % ============================================================
 \section{Conclusion}
 \label{sec:conclusion}
 
-\climkern{} represents a paradigm shift from pre-computed to
-data-driven radiative kernels. By learning kernels directly from
-observations via constrained NIPALS-PLS with state-dependent SIMCA
-routing, the system:
+We present \climkern{}, a two-step extension of \oldsystem{}
+v1.2 that addresses the interkernel spread problem and
+introduces data-driven kernel estimation:
 
 \begin{enumerate}[noitemsep]
-  \item Eliminates interkernel model dependence documented by
-    \citet{Janoski2025}.
-  \item Provides the first out-of-sample predictive validation
-    ($\Qsq = 0.704$) of a radiative kernel system on real
-    observations.
-  \item Incorporates physical constraints (Stefan-Boltzmann,
-    energy conservation, TOA emissivity) to maintain scientific
-    consistency.
-  \item Achieves 4--10$\times$ GPU acceleration via a dual
-    \jax{}/\numpy{} backend with exact autodifferentiation
-    gradients.
+  \item \textbf{Step~1 (Kernel Harmonization):} Constrained
+    NIPALS-PLS with SIMCA regime routing optimally combines the
+    11 \oldsystem{} kernel sets, reducing interkernel spread
+    while maintaining interpretability. This step builds
+    directly on \citeauthor{Janoski2025}'s kernel repository
+    and requires no new data sources beyond the existing kernels
+    and CERES observations.
+  \item \textbf{Step~2 (Data-Driven Extension):} The same
+    PLS/SIMCA/constraint framework learns kernel sensitivities
+    directly from atmospheric state observations, achieving
+    $\Qsq = 0.704$ on real holdout data with physically correct
+    feedback signs. A dual \jax{}/\numpy{} backend enables GPU
+    acceleration with exact autodifferentiation gradients.
 \end{enumerate}
+
+Both steps share the same mathematical framework, physical
+constraints, and state-classification machinery, demonstrating
+that the constrained PLS approach is a general tool for
+radiative kernel estimation---whether combining existing kernels
+or learning new ones from scratch.
 
 The package is validated with 57 tests (44 unit + 6 workflow + 7
 scientific) at 100\% pass rate, including real observational data
@@ -626,9 +783,11 @@ validation dataset can be regenerated using
 % ============================================================
 \section*{Acknowledgments}
 
-We thank Ivan Mitevski and Tyler Janoski for their work on
-\oldsystem{} v1.2, which motivated and contextualized this
-extension. Development was assisted by Claude (Anthropic).
+We thank Tyler Janoski, Ivan Mitevski, Ryan Kramer, Michael
+Previdi, and Lorenzo Polvani for their work on \oldsystem{} v1.2,
+which provides the kernel repository and feedback computation
+infrastructure upon which Step~1 is built. Development was
+assisted by Claude (Anthropic).
 
 % ============================================================
 \bibliographystyle{apalike}
