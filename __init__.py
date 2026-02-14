@@ -62,13 +62,21 @@ from climkern_retune.core import (
     KernelOutput,
 )
 
-# Step 1: Kernel Harmonization
-from kernel_harmonizer import KernelHarmonizer, HarmonizationResult, MultiKernelLoader
+# Step 1: Kernel Harmonization (two-stage pipeline)
+from kernel_harmonizer import (
+    KernelRegimeHarmonizer,
+    KernelHarmonizer,  # backward-compat alias
+    HarmonizationResult,
+    MultiKernelLoader,
+    KernelRegridder,
+    Q2Dashboard,
+)
+from state_classifier import KernelRegimeClassifier
 
 # Step 1 wrapper with TunableKernel-compatible interface
 from tunable_kernel import HarmonizedKernel
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __author__ = "Gorgi Pavlov"
 
 __all__ = [
@@ -82,10 +90,14 @@ __all__ = [
     "ClimateState",
     "compute_lts",
     "compute_eis",
-    # Step 1: Kernel Harmonization
-    "KernelHarmonizer",
+    "KernelRegimeClassifier",
+    # Step 1: Kernel Harmonization (two-stage pipeline)
+    "KernelRegimeHarmonizer",
+    "KernelHarmonizer",  # backward-compat alias
     "HarmonizationResult",
     "MultiKernelLoader",
+    "KernelRegridder",
+    "Q2Dashboard",
     "HarmonizedKernel",
     # Step 2: Data-Driven Kernels
     "TunableKernel",

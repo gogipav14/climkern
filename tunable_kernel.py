@@ -745,34 +745,40 @@ def compare_vertical_resolutions(
 
 class HarmonizedKernel:
     """
-    Step 1 kernel: optimally weighted blend of pre-computed kernel sets.
+    Step 1 kernel: two-stage pipeline blending 11 pre-computed kernel sets.
 
-    Wraps KernelHarmonizer with the same interface as TunableKernel
+    Wraps KernelRegimeHarmonizer with the same interface as TunableKernel
     (.fit(), .compute(), .evaluate()) for direct comparison between
     Step 1 (kernel harmonization) and Step 2 (data-driven learning).
+
+    Stage 1 fits a global PLS baseline, discovers 11 SIMCA kernel regimes,
+    and trains per-regime PLS models. Stage 2 retunes a global PLS via 4
+    competing approaches (A-D), compared by Q² and thermodynamic compliance.
 
     Parameters
     ----------
     n_components : int
         Number of PLS components for kernel blending.
-    use_state_dependent : bool
-        Whether to use SIMCA regime routing.
     constraints : list[PhysicalConstraint], optional
         Physical constraints to enforce on the blend.
+    min_samples_per_regime : int
+        Minimum samples to fit a per-regime PLS model.
     """
 
     def __init__(
         self,
         n_components: int = 3,
-        use_state_dependent: bool = False,
         constraints: list[PhysicalConstraint] | None = None,
+        min_samples_per_regime: int = 30,
+        # Deprecated parameter kept for backward compatibility
+        use_state_dependent: bool = False,
     ):
-        from kernel_harmonizer import KernelHarmonizer
+        from kernel_harmonizer import KernelRegimeHarmonizer
 
-        self.harmonizer = KernelHarmonizer(
+        self.harmonizer = KernelRegimeHarmonizer(
             n_components=n_components,
-            use_state_dependent=use_state_dependent,
             constraints=constraints,
+            min_samples_per_regime=min_samples_per_regime,
         )
         self.kernel_names_: list[str] = []
         self.is_fitted_: bool = False
@@ -782,12 +788,16 @@ class HarmonizedKernel:
         X: NDArray[np.floating],
         Y: NDArray[np.floating],
         kernel_names: list[str] | None = None,
+        # Deprecated parameters kept for backward compatibility
         latitude: NDArray[np.floating] | None = None,
         cloud_fraction: NDArray[np.floating] | None = None,
         lts: NDArray[np.floating] | None = None,
     ) -> HarmonizedKernel:
         """
-        Fit using kernel predictions as features.
+        Fit the two-stage pipeline using kernel predictions as features.
+
+        Runs Stage 1 (global PLS + 11 SIMCA regimes + per-regime PLS) and
+        Stage 2 (all 4 retune approaches: A, B, C, D).
 
         Parameters
         ----------
@@ -797,26 +807,28 @@ class HarmonizedKernel:
             Observed radiative flux changes.
         kernel_names : list[str], optional
             Names of kernel sets.
-        latitude, cloud_fraction, lts : arrays, optional
-            For state-dependent routing.
         """
         if kernel_names is None:
             kernel_names = [f"kernel_{i}" for i in range(X.shape[1])]
         self.kernel_names_ = kernel_names
-        self.harmonizer.fit(X, Y, kernel_names, latitude, cloud_fraction, lts)
+        self.harmonizer.fit_all(X, Y, kernel_names)
         self.is_fitted_ = True
         return self
 
     def compute(
         self,
         X: NDArray[np.floating],
+        method: str = "best",
     ) -> KernelOutput:
         """
-        Predict ΔR using optimally weighted kernel blend.
+        Predict ΔR using the specified retune approach.
 
         Parameters
         ----------
         X : array of shape (n_samples, n_kernels)
+        method : str
+            One of 'best', 'global_pls', 'regime_blend',
+            'retune_A', 'retune_B', 'retune_C', 'retune_D'.
 
         Returns
         -------
@@ -825,7 +837,7 @@ class HarmonizedKernel:
         if not self.is_fitted_:
             raise RuntimeError("HarmonizedKernel must be fitted first")
 
-        Y_pred = self.harmonizer.predict(X)
+        Y_pred = self.harmonizer.predict(X, method=method)
 
         if Y_pred.shape[1] >= 2:
             delta_r_lw = Y_pred[:, 0]
@@ -845,9 +857,24 @@ class HarmonizedKernel:
         self,
         X: NDArray[np.floating],
         Y: NDArray[np.floating],
+        method: str = "best",
     ) -> float:
-        """Return Q² score."""
-        return self.harmonizer.evaluate(X, Y)
+        """Return Q² score for the specified method."""
+        return self.harmonizer.evaluate(X, Y, method=method)
+
+    def q2_dashboard(
+        self,
+        X_test: NDArray[np.floating],
+        Y_test: NDArray[np.floating],
+        surface_temp: NDArray[np.floating] | None = None,
+    ):
+        """
+        Generate comprehensive Q² report for all steps and versions.
+
+        Returns a Q2Dashboard with per-kernel, per-regime, all retune
+        approach Q² values, thermodynamic compliance, and spread reduction.
+        """
+        return self.harmonizer.q2_dashboard(X_test, Y_test, surface_temp)
 
     def get_kernel_weights(self, regime_id: int | None = None) -> NDArray[np.floating]:
         """Get per-kernel combination weights."""

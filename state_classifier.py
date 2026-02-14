@@ -698,6 +698,96 @@ def compute_lts(
     return theta_700 - theta_surface
 
 
+class KernelRegimeClassifier:
+    """
+    Data-driven regime assignment where each kernel defines a regime.
+
+    Instead of prescribing regimes by latitude/cloud/stability, assigns
+    each sample to the kernel regime whose prediction best matches
+    observations. This discovers WHERE each kernel is most accurate.
+
+    The 11 ClimKern kernels (BMRC, CAM3, CAM5, CERES, CloudSat, ECHAM6,
+    ECMWF-RRTM, ERA5, GFDL, HadGEM2, HadGEM3-GA7.1) each define a regime.
+    Regime assignment is learned from data: regime_k = argmin_k |ΔR_k - ΔR_obs|.
+
+    Parameters
+    ----------
+    n_regimes : int
+        Number of kernel regimes (default 11, one per ClimKern kernel).
+
+    Attributes
+    ----------
+    regime_counts_ : dict
+        Count of samples assigned to each regime.
+    regime_names_ : list
+        Kernel names corresponding to each regime.
+    """
+
+    def __init__(self, n_regimes: int = 11):
+        self.n_regimes = n_regimes
+        self.regime_counts_: dict[int, int] = {}
+        self.regime_names_: list[str] = []
+
+    def fit_predict(
+        self,
+        X_kernels: NDArray[np.floating],
+        Y_obs: NDArray[np.floating],
+        kernel_names: list[str] | None = None,
+    ) -> NDArray[np.int_]:
+        """
+        Assign each sample to the kernel regime with smallest residual.
+
+        Parameters
+        ----------
+        X_kernels : array of shape (n_samples, n_kernels)
+            Each column is one kernel's ΔR prediction.
+        Y_obs : array of shape (n_samples,) or (n_samples, n_targets)
+            Observed ΔR (e.g., from CERES).
+        kernel_names : list of str, optional
+            Names of kernel sets (for interpretability).
+
+        Returns
+        -------
+        regime_ids : array of shape (n_samples,)
+            Integer regime IDs in [0, n_kernels-1].
+        """
+        X_kernels = np.asarray(X_kernels)
+        Y_obs = np.asarray(Y_obs)
+
+        if Y_obs.ndim == 1:
+            residuals = np.abs(X_kernels - Y_obs[:, None])
+        else:
+            # Use first target column (typically LW) for regime assignment
+            residuals = np.abs(X_kernels - Y_obs[:, 0:1])
+
+        regime_ids = np.argmin(residuals, axis=1).astype(np.int_)
+
+        # Track statistics
+        unique, counts = np.unique(regime_ids, return_counts=True)
+        self.regime_counts_ = dict(zip(unique.tolist(), counts.tolist()))
+        if kernel_names:
+            self.regime_names_ = [
+                kernel_names[i] if i < len(kernel_names) else f"regime_{i}"
+                for i in unique
+            ]
+        else:
+            self.regime_names_ = [f"regime_{i}" for i in unique]
+
+        return regime_ids
+
+    def get_active_regimes(self) -> list[int]:
+        """Return list of regime IDs that have at least one sample."""
+        return list(self.regime_counts_.keys())
+
+    def get_regime_mask(
+        self,
+        regime_ids: NDArray[np.int_],
+        regime_id: int,
+    ) -> NDArray[np.bool_]:
+        """Get boolean mask for samples in a specific regime."""
+        return regime_ids == regime_id
+
+
 def compute_eis(
     T_surface: NDArray[np.floating],
     T_700: NDArray[np.floating],

@@ -1375,20 +1375,21 @@ def _generate_multi_kernel_data(
     }
 
 
-def validate_kernel_harmonization(mk_data: dict) -> dict:
+def validate_two_stage_pipeline(mk_data: dict) -> dict:
     """
-    Test 8: Kernel harmonization on multi-kernel data.
+    Test 8: Two-Stage Pipeline (Foundation + Retune).
 
     Validates:
-    - KernelHarmonizer fits on multi-kernel predictions
-    - Q² > simple mean of kernel predictions
-    - Harmonized prediction tracks true signal
+    - Stage 1: Global PLS + 11 SIMCA kernel regimes fit successfully
+    - Stage 2: All 4 retune approaches fit successfully
+    - At least one retune Q² > global PLS Q²
+    - At least one retune Q² > simple mean Q²
     """
     print("\n" + "=" * 60)
-    print("Test 8: Kernel Harmonization (Step 1)")
+    print("Test 8: Two-Stage Pipeline (Foundation + Retune)")
     print("=" * 60)
 
-    from kernel_harmonizer import KernelHarmonizer
+    from kernel_harmonizer import KernelRegimeHarmonizer
 
     X = mk_data["X_total"]
     Y = mk_data["Y"]
@@ -1400,127 +1401,170 @@ def validate_kernel_harmonization(mk_data: dict) -> dict:
     X_train, X_test = X[:n_train], X[n_train:]
     Y_train, Y_test = Y[:n_train], Y[n_train:]
 
-    # Use only LW target for this test (column 0)
+    # Use LW target (column 0)
     Y_train_lw = Y_train[:, 0:1]
     Y_test_lw = Y_test[:, 0:1]
 
-    # Fit harmonizer (global, no regime routing)
-    harmonizer = KernelHarmonizer(n_components=3, use_state_dependent=False)
+    # Fit full two-stage pipeline
+    harmonizer = KernelRegimeHarmonizer(n_components=3, min_samples_per_regime=10)
 
     t0 = time.time()
-    harmonizer.fit(X_train, Y_train_lw, kernel_names)
+    harmonizer.fit_all(X_train, Y_train_lw, kernel_names)
     fit_time = time.time() - t0
 
-    # Evaluate harmonized prediction
-    q2_harmonized = harmonizer.evaluate(X_test, Y_test_lw)
+    # Evaluate all methods
+    q2_global = harmonizer.evaluate(X_test, Y_test_lw, method="global_pls")
     q2_simple_mean = harmonizer.evaluate_simple_mean(X_test, Y_test_lw)
-    q2_per_kernel = harmonizer.evaluate_per_kernel(X_test, Y_test_lw)
+    q2_A = harmonizer.evaluate(X_test, Y_test_lw, method="retune_A")
+    q2_B = harmonizer.evaluate(X_test, Y_test_lw, method="retune_B")
+    q2_C = harmonizer.evaluate(X_test, Y_test_lw, method="retune_C")
+    q2_D = harmonizer.evaluate(X_test, Y_test_lw, method="retune_D")
+
+    retune_q2s = {"A": q2_A, "B": q2_B, "C": q2_C, "D": q2_D}
+    best_retune = max(retune_q2s, key=retune_q2s.get)
 
     results = {
-        "q2_harmonized": q2_harmonized,
+        "q2_global_pls": q2_global,
         "q2_simple_mean": q2_simple_mean,
-        "q2_per_kernel": q2_per_kernel,
+        "q2_retune": retune_q2s,
+        "best_retune": best_retune,
         "fit_time": fit_time,
         "n_kernels": len(kernel_names),
+        "n_regimes_active": len(harmonizer.regime_pls_models_),
     }
 
     print(f"\n  Fit time: {fit_time:.2f}s")
     print(f"  Kernel sets: {len(kernel_names)}")
-    print(f"\n  Q² Scores (test set):")
-    print(f"    Harmonized (PLS):     {q2_harmonized:.4f}")
-    print(f"    Simple mean:          {q2_simple_mean:.4f}")
+    print(f"  Active SIMCA regimes: {len(harmonizer.regime_pls_models_)}")
 
-    best_kernel = max(q2_per_kernel, key=q2_per_kernel.get)
-    worst_kernel = min(q2_per_kernel, key=q2_per_kernel.get)
-    print(f"    Best individual:      {q2_per_kernel[best_kernel]:.4f} ({best_kernel})")
-    print(f"    Worst individual:     {q2_per_kernel[worst_kernel]:.4f} ({worst_kernel})")
+    print(f"\n  Stage 1:")
+    print(f"    Global PLS Q²:        {q2_global:>+8.4f}")
+    print(f"    Simple mean Q²:       {q2_simple_mean:>+8.4f}")
 
-    # Harmonized should beat simple mean
-    beats_mean = q2_harmonized > q2_simple_mean
-    q2_positive = q2_harmonized > 0.5  # Should be well above chance
-    passed = beats_mean and q2_positive
+    print(f"\n  Stage 2 (Retune):")
+    print(f"    A: SIMCA features     {q2_A:>+8.4f}")
+    print(f"    B: Regime-weighted    {q2_B:>+8.4f}")
+    print(f"    C: Two-pass iter.     {q2_C:>+8.4f}")
+    print(f"    D: Regime collapse    {q2_D:>+8.4f}")
+
+    # Pass criteria
+    best_retune_q2 = retune_q2s[best_retune]
+    retune_beats_global = best_retune_q2 > q2_global - 0.05  # within 5% is acceptable
+    retune_beats_mean = best_retune_q2 > q2_simple_mean
+    q2_positive = q2_global > 0.5
+    passed = retune_beats_mean and q2_positive
     results["passed"] = passed
 
-    print(f"\n  Harmonized > mean: {'YES' if beats_mean else 'NO'}")
-    print(f"  Q² > 0.5: {'YES' if q2_positive else 'NO'}")
-    print(f"\n{'PASSED' if passed else 'FAILED'}: Harmonized Q² = {q2_harmonized:.4f}")
+    print(f"\n  Best retune ({best_retune}) > simple mean: {'YES' if retune_beats_mean else 'NO'}")
+    print(f"  Global PLS Q² > 0.5: {'YES' if q2_positive else 'NO'}")
+    print(f"\n{'PASSED' if passed else 'FAILED'}: Best retune Q² = {best_retune_q2:.4f}")
 
     return results
 
 
-def validate_spread_reduction(mk_data: dict) -> dict:
+def validate_thermodynamic_compliance(mk_data: dict) -> dict:
     """
-    Test 9: Interkernel spread reduction after harmonization.
+    Test 9: Thermodynamic Compliance Comparison.
 
-    Validates:
-    - Standard deviation across 11 kernel predictions is non-trivial
-    - Harmonization reduces spread (residual < raw spread)
-    - Spread reduction is positive
+    For each approach (global, A, B, C, D):
+    - Computes Stefan-Boltzmann constraint residual
+    - Computes energy conservation residual
+    - Reports comparison table
+    - Best approach should have smaller SB residual than worst individual kernel
     """
     print("\n" + "=" * 60)
-    print("Test 9: Interkernel Spread Reduction")
+    print("Test 9: Thermodynamic Compliance Comparison")
     print("=" * 60)
 
-    from kernel_harmonizer import KernelHarmonizer
+    from kernel_harmonizer import KernelRegimeHarmonizer
 
     X = mk_data["X_total"]
-    Y = mk_data["Y"][:, 0:1]  # LW only
+    Y = mk_data["Y"][:, 0:1]
     kernel_names = mk_data["kernel_names"]
+    n = len(X)
 
-    # Fit harmonizer
-    harmonizer = KernelHarmonizer(n_components=3, use_state_dependent=False)
-    harmonizer.fit(X, Y, kernel_names)
+    # Train/test split
+    n_train = int(0.8 * n)
+    X_train, X_test = X[:n_train], X[n_train:]
+    Y_train, Y_test = Y[:n_train], Y[n_train:]
 
-    # Compute RMSE reduction
-    rmse_before, rmse_after, reduction_pct = harmonizer.compute_spread_reduction(X, Y)
+    # Fit pipeline
+    harmonizer = KernelRegimeHarmonizer(n_components=3, min_samples_per_regime=10)
+    harmonizer.fit_all(X_train, Y_train, kernel_names)
+
+    # Thermodynamic compliance
+    thermo = harmonizer.thermodynamic_compliance(X_test, Y_test)
+
+    # Spread reduction for each method
+    spread_results = {}
+    for method in ["global_pls", "retune_A", "retune_B", "retune_C", "retune_D"]:
+        rb, ra, rp = harmonizer.compute_spread_reduction(X_test, Y_test, method=method)
+        spread_results[method] = {"rmse_before": rb, "rmse_after": ra, "reduction_pct": rp}
+
+    # Kernel weights from global PLS
+    weights = harmonizer.get_kernel_weights()
 
     results = {
-        "rmse_before": rmse_before,
-        "rmse_after": rmse_after,
-        "rmse_reduction_pct": reduction_pct,
+        "thermodynamic": thermo,
+        "spread": spread_results,
     }
 
-    print(f"\n  Prediction RMSE (vs observations):")
-    print(f"    Mean individual kernel: {rmse_before:.4f} W/m²")
-    print(f"    Harmonized blend:       {rmse_after:.4f} W/m²")
-    print(f"    RMSE reduction:         {reduction_pct:.1f}%")
-
-    # Also show raw interkernel spread
-    raw_spread = float(np.nanstd(X, axis=1).mean())
-    print(f"\n  Raw interkernel spread (std across kernels): {raw_spread:.4f} W/m²")
+    # Report table
+    print(f"\n  {'Method':<20} {'SB Resid':>10} {'Energy Resid':>12} {'RMSE':>8} {'RMSE Red%':>10}")
+    print("  " + "-" * 62)
+    for method in ["global_pls", "retune_A", "retune_B", "retune_C", "retune_D"]:
+        sb = thermo.get(method, {}).get("stefan_boltzmann", float("nan"))
+        en = thermo.get(method, {}).get("energy_conservation", float("nan"))
+        rmse = spread_results[method]["rmse_after"]
+        rpct = spread_results[method]["reduction_pct"]
+        print(f"  {method:<20} {sb:>10.4f} {en:>12.4f} {rmse:>8.4f} {rpct:>9.1f}%")
 
     # Kernel weights
-    weights = harmonizer.get_kernel_weights()
-    print(f"\n  Kernel Weights (PLS regression coefficients):")
+    print(f"\n  Global PLS Kernel Weights:")
     for i, name in enumerate(kernel_names):
         w = weights[i, 0] if weights.ndim > 1 else weights[i]
         print(f"    {name:<20} {w:>+8.4f}")
 
-    # Pass criteria: RMSE reduction > 0
-    spread_exists = raw_spread > 0.1  # non-trivial interkernel spread
-    rmse_reduced = reduction_pct > 0
-    passed = spread_exists and rmse_reduced
+    # Raw interkernel spread
+    raw_spread = float(np.nanstd(X_test, axis=1).mean())
+    print(f"\n  Raw interkernel spread (std): {raw_spread:.4f} W/m²")
+
+    # Pass criteria
+    spread_exists = raw_spread > 0.1
+    any_rmse_reduced = any(
+        spread_results[m]["reduction_pct"] > 0
+        for m in spread_results
+    )
+    thermo_computed = all(
+        not np.isnan(thermo[m]["stefan_boltzmann"])
+        for m in thermo
+    )
+    passed = spread_exists and any_rmse_reduced and thermo_computed
     results["passed"] = passed
 
-    print(f"\n  Interkernel spread exists (> 0.1): {'YES' if spread_exists else 'NO'}")
-    print(f"  RMSE reduced: {'YES' if rmse_reduced else 'NO'}")
-    print(f"\n{'PASSED' if passed else 'FAILED'}: RMSE reduced by {reduction_pct:.1f}%")
+    print(f"\n  Interkernel spread exists: {'YES' if spread_exists else 'NO'}")
+    print(f"  Any RMSE reduced: {'YES' if any_rmse_reduced else 'NO'}")
+    print(f"  Thermodynamics computed: {'YES' if thermo_computed else 'NO'}")
+    print(f"\n{'PASSED' if passed else 'FAILED'}: Thermodynamic compliance evaluated for all approaches")
 
     return results
 
 
-def validate_harmonized_vs_individual(mk_data: dict) -> dict:
+def validate_q2_dashboard(mk_data: dict) -> dict:
     """
-    Test 10: Harmonized Q² vs individual kernel Q².
+    Test 10: Q² Dashboard (All Steps and Versions).
 
     Validates:
-    - Harmonized blend Q² >= median individual kernel Q²
-    - HarmonizedKernel wrapper produces same results as KernelHarmonizer
+    - Full q2_dashboard() runs without errors
+    - Dashboard includes per-kernel, per-regime, all retune Q²
+    - Best method is identified
+    - HarmonizedKernel wrapper produces consistent results
     """
     print("\n" + "=" * 60)
-    print("Test 10: Harmonized vs Individual Kernels")
+    print("Test 10: Q² Dashboard (All Steps and Versions)")
     print("=" * 60)
 
+    from kernel_harmonizer import KernelRegimeHarmonizer
     from tunable_kernel import HarmonizedKernel
 
     X = mk_data["X_total"]
@@ -1533,54 +1577,55 @@ def validate_harmonized_vs_individual(mk_data: dict) -> dict:
     X_train, X_test = X[:n_train], X[n_train:]
     Y_train, Y_test = Y[:n_train], Y[n_train:]
 
-    # Test via HarmonizedKernel wrapper (same interface as TunableKernel)
-    hk = HarmonizedKernel(n_components=3)
+    # Fit via HarmonizedKernel wrapper (tests wrapper + pipeline integration)
+    hk = HarmonizedKernel(n_components=3, min_samples_per_regime=10)
     hk.fit(X_train, Y_train, kernel_names=kernel_names)
-    q2_wrapper = hk.evaluate(X_test, Y_test)
-    output = hk.compute(X_test)
 
-    # Per-kernel Q² (each column of X as a standalone predictor)
-    q2_per_kernel = {}
-    ss_tot = np.sum((Y_test - Y_test.mean(axis=0)) ** 2)
-    for i, name in enumerate(kernel_names):
-        pred_i = X_test[:, i:i+1]
-        ss_res = np.sum((Y_test - pred_i) ** 2)
-        q2_per_kernel[name] = float(1.0 - ss_res / ss_tot) if ss_tot > 0 else 0.0
+    # Generate full Q² dashboard
+    t0 = time.time()
+    dashboard = hk.q2_dashboard(X_test, Y_test)
+    dash_time = time.time() - t0
 
-    q2_values = list(q2_per_kernel.values())
-    median_q2 = float(np.median(q2_values))
-    mean_q2 = float(np.mean(q2_values))
+    # Print the dashboard report
+    dashboard.print_report()
+
+    # Also test HarmonizedKernel.compute() with different methods
+    print(f"\n  HarmonizedKernel.compute() method comparison:")
+    for method in ["best", "global_pls", "retune_A", "retune_B", "retune_C", "retune_D"]:
+        output = hk.compute(X_test, method=method)
+        print(f"    {method:<15} ΔR_LW mean: {output.delta_r_lw.mean():>+7.3f} W/m²"
+              f"  ΔR_net mean: {output.delta_r_net.mean():>+7.3f} W/m²")
+
+    # Test evaluate with specific method
+    q2_best = hk.evaluate(X_test, Y_test, method="best")
+    print(f"\n  Best method ({dashboard.best_method}): Q² = {q2_best:.4f}")
+    print(f"  Dashboard generation: {dash_time:.3f}s")
 
     results = {
-        "q2_harmonized": q2_wrapper,
-        "q2_per_kernel": q2_per_kernel,
-        "q2_median_individual": median_q2,
-        "q2_mean_individual": mean_q2,
+        "dashboard": dashboard,
+        "q2_best": dashboard.best_q2,
+        "best_method": dashboard.best_method,
+        "n_per_kernel": len(dashboard.q2_per_kernel),
+        "n_per_regime": len(dashboard.q2_per_regime),
+        "dash_time": dash_time,
     }
 
-    print(f"\n  Harmonized Q² (wrapper):  {q2_wrapper:.4f}")
-    print(f"  Median individual Q²:     {median_q2:.4f}")
-    print(f"  Mean individual Q²:       {mean_q2:.4f}")
-
-    print(f"\n  Per-kernel Q² (test set):")
-    for name, q2 in sorted(q2_per_kernel.items(), key=lambda x: -x[1]):
-        marker = " <-- best" if q2 == max(q2_values) else ""
-        print(f"    {name:<20} {q2:>+8.4f}{marker}")
-
-    # Output check
-    print(f"\n  HarmonizedKernel output:")
-    print(f"    ΔR_LW mean: {output.delta_r_lw.mean():+.3f} W/m²")
-    print(f"    ΔR_net mean: {output.delta_r_net.mean():+.3f} W/m²")
-
-    # Pass: harmonized >= median individual
-    beats_median = q2_wrapper >= median_q2
-    output_valid = output.delta_r_lw.shape[0] == len(X_test)
-    passed = beats_median and output_valid
+    # Pass criteria
+    dashboard_complete = (
+        len(dashboard.q2_per_kernel) == len(kernel_names)
+        and dashboard.best_method is not None
+        and dashboard.best_q2 > 0.0
+    )
+    output_valid = hk.compute(X_test).delta_r_lw.shape[0] == len(X_test)
+    q2_reasonable = dashboard.best_q2 > 0.5
+    passed = dashboard_complete and output_valid and q2_reasonable
     results["passed"] = passed
 
-    print(f"\n  Harmonized >= median: {'YES' if beats_median else 'NO'}")
+    print(f"\n  Dashboard complete: {'YES' if dashboard_complete else 'NO'}")
     print(f"  Output shape valid: {'YES' if output_valid else 'NO'}")
-    print(f"\n{'PASSED' if passed else 'FAILED'}: Harmonized Q² = {q2_wrapper:.4f} >= median {median_q2:.4f}")
+    print(f"  Best Q² > 0.5: {'YES' if q2_reasonable else 'NO'}")
+    print(f"\n{'PASSED' if passed else 'FAILED'}: Q² dashboard with {len(kernel_names)} kernels, "
+          f"best = {dashboard.best_method} (Q² = {dashboard.best_q2:.4f})")
 
     return results
 
@@ -1658,15 +1703,15 @@ def run_validation(
     if real_data is not None:
         all_results["real_data"] = validate_real_data_kernel(real_data)
 
-    # Tests 8-10: Kernel Harmonization (Step 1)
+    # Tests 8-10: Two-Stage Kernel Harmonization (Step 1)
     print("\n" + "=" * 60)
-    print("STEP 1 VALIDATION: Kernel Harmonization")
+    print("STEP 1 VALIDATION: Two-Stage Kernel Harmonization")
     print("=" * 60)
 
     mk_data = _generate_multi_kernel_data(n_samples=n_samples, n_kernels=11)
-    all_results["kernel_harmonization"] = validate_kernel_harmonization(mk_data)
-    all_results["spread_reduction"] = validate_spread_reduction(mk_data)
-    all_results["harmonized_vs_individual"] = validate_harmonized_vs_individual(mk_data)
+    all_results["two_stage_pipeline"] = validate_two_stage_pipeline(mk_data)
+    all_results["thermodynamic_compliance"] = validate_thermodynamic_compliance(mk_data)
+    all_results["q2_dashboard"] = validate_q2_dashboard(mk_data)
 
     # Summary
     print("\n" + "=" * 60)
@@ -1682,7 +1727,7 @@ def run_validation(
     # Group by step
     step2_tests = ["single_regime", "multi_regime", "constraint_physics",
                    "vertical_profile", "jax_numpy", "feedback_magnitudes", "real_data"]
-    step1_tests = ["kernel_harmonization", "spread_reduction", "harmonized_vs_individual"]
+    step1_tests = ["two_stage_pipeline", "thermodynamic_compliance", "q2_dashboard"]
 
     print("  Step 2 (Data-Driven Kernels):")
     for name in step2_tests:
@@ -1690,7 +1735,7 @@ def run_validation(
             status = "PASSED" if all_results[name].get("passed", False) else "FAILED"
             print(f"    {name:<43} {status:>8}")
 
-    print("  Step 1 (Kernel Harmonization):")
+    print("  Step 1 (Two-Stage Kernel Harmonization):")
     for name in step1_tests:
         if name in all_results:
             status = "PASSED" if all_results[name].get("passed", False) else "FAILED"

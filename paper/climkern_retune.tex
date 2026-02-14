@@ -38,12 +38,8 @@
 }
 
 \author{
-  Gorgi Pavlov\textsuperscript{1}
-  \and
-  Claude\textsuperscript{2}
-  \\[6pt]
-  \textsuperscript{1}\textit{Independent Researcher} \\
-  \textsuperscript{2}\textit{Anthropic}
+  Gorgi Pavlov \\[6pt]
+  \textit{Independent Researcher}
 }
 
 \date{\today}
@@ -61,16 +57,18 @@ them. We present \climkern{}, a two-step extension of \oldsystem{}
 that bridges the gap between discrete pre-computed kernels and
 fully data-driven kernel estimation.
 
-\textbf{Step~1 (Kernel Harmonization)} treats the 11 kernel sets
-as an ensemble to be optimally combined: for each grid
-point--month, the radiative flux predictions from all 11 kernels
-form a feature matrix $\mathbf{X} \in \mathbb{R}^{n \times 11}$,
-and CERES satellite observations provide the target
-$\mathbf{Y}$. Constrained NIPALS-PLS regression with
-state-dependent SIMCA regime routing finds optimal, physically
-consistent kernel combination weights per climate regime,
-reducing interkernel spread while preserving the interpretability
-of the original kernels.
+\textbf{Step~1 (Two-Stage Kernel Harmonization)} treats the 11
+kernel sets as an ensemble via a two-stage pipeline. Stage~1
+preserves the original \oldsystem{} kernels: a global
+constrained NIPALS-PLS baseline is fit on the $n \times 11$
+kernel prediction matrix, then 11 data-driven SIMCA regimes
+are discovered (one per kernel, assigned by residual proximity
+to CERES observations). Stage~2 (``Retune'') uses the SIMCA
+regime structure to re-derive a better global PLS via four
+competing approaches---SIMCA-augmented features, regime-weighted
+PLS, two-pass iterative refinement, and regime
+collapse---compared by $\Qsq$ and thermodynamic compliance
+(Stefan-Boltzmann, energy conservation).
 
 \textbf{Step~2 (Data-Driven Extension)} goes beyond pre-computed
 kernels entirely, replacing the 11-kernel feature matrix with
@@ -83,9 +81,12 @@ dual \jax{}/\numpy{} backend enabling GPU-accelerated exact
 autodifferentiation.
 
 Validated against CERES EBAF-TOA Ed4.2 and NCEP/NCAR Reanalysis
-data (2003--2020), Step~2 achieves $\Qsq = 0.967$ on synthetic
-benchmarks and $\Qsq = 0.704$ on real observational holdout
-data, while recovering physically correct feedback signs.
+data (2003--2020), Step~1 transforms individually biased kernel
+predictions ($\Qsq < 0$ for all 11 kernels) into a skillful
+harmonized ensemble ($\Qsq = 0.554$ on real holdout data with
+76\% interkernel RMSE reduction). Step~2 achieves $\Qsq = 0.967$
+on synthetic benchmarks and $\Qsq = 0.704$ on real observational
+holdout data, while recovering physically correct feedback signs.
 \end{abstract}
 
 % ============================================================
@@ -268,7 +269,7 @@ are routed to regime-specific kernel combination models; in
 Step~2, to regime-specific data-driven kernel models.
 
 % ============================================================
-\section{Step~1: Kernel Harmonization}
+\section{Step~1: Two-Stage Kernel Harmonization}
 \label{sec:harmonization}
 
 \subsection{Problem Statement}
@@ -280,6 +281,13 @@ TOA flux prediction $\Delta R^{(k)}$. Users currently must either
 choose one kernel set (introducing arbitrary model dependence) or
 report results across all 11 (complicating interpretation). No
 principled weighting exists.
+
+We address this with a two-stage pipeline. Stage~1 preserves the
+original \oldsystem{} kernels, fitting a global PLS baseline and
+then discovering 11 data-driven regimes (one per kernel set) via
+SIMCA. Stage~2 (``Retune'') uses the SIMCA regime structure to
+re-derive a better global PLS via four competing approaches,
+compared by $\Qsq$ and thermodynamic compliance.
 
 \subsection{Formulation}
 
@@ -298,25 +306,113 @@ For each grid point--month sample $i$:
     EBAF-TOA Ed4.2.
 \end{itemize}
 
-The PLS regression (Eq.~\ref{eq:loss}) learns the regression
-matrix $\hat{\mathbf{B}} \in \mathbb{R}^{11 \times 2}$, where
-column $j$ of $\hat{\mathbf{B}}$ gives the weight of each kernel
-for predicting flux component $j$. The constraints from
-Section~\ref{sec:constraints} ensure the blended prediction
-satisfies radiative physics.
+\subsection{Stage~1: ClimKern Foundation}
+\label{sec:stage1}
 
-\subsection{State-Dependent Optimal Weighting}
+Stage~1 establishes a baseline and discovers regime structure:
 
-The SIMCA classifier (Section~\ref{sec:simca}) routes each
-sample to one of 16 climate regimes, and a separate PLS model
-is fit per regime. This yields regime-specific kernel weights:
-in polar regions, the weighting may favor kernels from models
-with better polar radiative transfer (e.g., ERA5, HadGEM3),
-while in the tropics, different kernels may dominate.
+\begin{enumerate}[noitemsep]
+  \item \textbf{Global PLS.} Constrained NIPALS-PLS
+    (Eq.~\ref{eq:loss}) fits a global regression
+    $\hat{\mathbf{B}} \in \mathbb{R}^{11 \times 2}$, where
+    column $j$ gives the weight of each kernel for predicting
+    flux component $j$.
+  \item \textbf{Kernel regime assignment.} For each sample $i$,
+    we assign it to the kernel regime with smallest residual:
+    \begin{equation}
+      r_i = \arg\min_{k} |\Delta R_i^{(k)} - \Delta R_i^\text{obs}|
+      \label{eq:regime_assign}
+    \end{equation}
+    This yields 11 data-driven regimes, each representing the
+    spatial--temporal domain where kernel $k$ is most accurate.
+  \item \textbf{SIMCA training.} A SIMCA classifier
+    (Section~\ref{sec:simca}) is fit on
+    $(\mathbf{X}, \{r_i\})$, yielding 11 PCA models with
+    soft membership probabilities $p_k(\mathbf{x})$.
+  \item \textbf{Per-regime PLS.} A separate constrained PLS
+    model is fit for each regime with sufficient samples,
+    learning regime-specific kernel weights.
+\end{enumerate}
 
-The interpretability of Step~1 is a key advantage: the learned
-weights $\hat{\mathbf{B}}$ directly answer ``which kernel set
-best predicts real observations in each climate regime?''
+The interpretability of Stage~1 is a key advantage: the regime
+assignment directly answers ``which kernel set best predicts
+real observations in each spatial--temporal domain?'', and the
+per-regime PLS weights reveal how kernels should be combined
+within each regime.
+
+\subsection{Stage~2: Retune}
+\label{sec:stage2}
+
+Stage~2 uses the SIMCA regime structure discovered in Stage~1 to
+re-derive a better global PLS. We implement four competing
+approaches:
+
+\paragraph{Approach A --- SIMCA Features.}
+Augments the feature matrix with SIMCA regime probabilities:
+\begin{equation}
+  \mathbf{X}_\text{aug} = [\mathbf{X}_\text{kernels}(11),\;
+    \mathbf{P}_\text{SIMCA}(11)] \in \mathbb{R}^{n \times 22}
+  \label{eq:retune_a}
+\end{equation}
+A global PLS is fit on $\mathbf{X}_\text{aug}$, so the model
+sees both kernel predictions and regime context.
+
+\paragraph{Approach B --- Regime-Weighted PLS.}
+Samples with high SIMCA confidence (clearly in one regime) receive
+higher weight; boundary samples are downweighted:
+\begin{equation}
+  w_i = \max_k p_k(\mathbf{x}_i), \qquad
+  \tilde{\mathbf{X}} = \sqrt{w} \odot \mathbf{X}, \qquad
+  \tilde{\mathbf{Y}} = \sqrt{w} \odot \mathbf{Y}
+  \label{eq:retune_b}
+\end{equation}
+Standard PLS on $(\tilde{\mathbf{X}}, \tilde{\mathbf{Y}})$ is
+equivalent to weighted least squares.
+
+\paragraph{Approach C --- Two-Pass Iterative.}
+Alternates between SIMCA regime update (based on current PLS
+residuals) and PLS refit with regime-informed clarity weighting.
+Convergence criterion: $|\Delta\Qsq| < 0.001$ between
+iterations, capped at 5 iterations.
+
+\paragraph{Approach D --- Regime Collapse.}
+Fits per-regime PLS models, then collapses their regression
+coefficients into a single global model:
+\begin{equation}
+  \mathbf{B}_\text{global} = \sum_k \frac{n_k}{N} \mathbf{B}_k
+  \label{eq:retune_d}
+\end{equation}
+where $n_k$ is the number of training samples in regime $k$.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth]{figures/fig1_pipeline.pdf}
+\caption{Architecture of the two-stage ClimKern-Retune pipeline.
+  Stage~1 (blue) fits a global PLS baseline and discovers 11
+  kernel regimes via SIMCA. Stage~2 (red/orange) retunes a global
+  PLS using the SIMCA structure via four competing
+  approaches (A--D), compared by $\Qsq$ and thermodynamic
+  compliance to select the best method.}
+\label{fig:pipeline}
+\end{figure}
+
+\subsection{$\Qsq$ Dashboard and Comparison}
+
+All approaches are evaluated via a comprehensive $\Qsq$ dashboard
+reporting:
+\begin{enumerate}[noitemsep]
+  \item Per individual kernel $\Qsq$ (11 values)
+  \item Simple mean baseline
+  \item Stage~1 global PLS and SIMCA-blended $\Qsq$
+  \item Stage~2 retune $\Qsq$ for approaches A--D
+  \item Per-regime $\Qsq$ (11 regimes)
+  \item Thermodynamic compliance residuals (Stefan-Boltzmann,
+    energy conservation) for each approach
+  \item RMSE spread reduction for each approach
+\end{enumerate}
+
+The best method is selected by highest $\Qsq$ on held-out test
+data, with thermodynamic compliance as a tiebreaker.
 
 \subsection{Computing Kernel Predictions}
 
@@ -346,23 +442,26 @@ The total kernel prediction is:
   \label{eq:total_kernel}
 \end{equation}
 
-With LW/SW separation, the feature matrix can be expanded to
-22 columns (11 LW + 11 SW predictions), though we find 11 total
-predictions sufficient for the harmonization task.
+Regridding between kernel grids uses \texttt{xESMF} with the
+same parameters as \oldsystem{} (\texttt{bilinear},
+\texttt{periodic=True}, \texttt{extrap\_method="nearest\_s2d"})
+for backward compatibility.
 
 \subsection{Expected Outcomes}
 
-Step~1 addresses the interkernel spread problem directly:
+The two-stage pipeline addresses the interkernel spread problem:
 \begin{enumerate}[noitemsep]
-  \item The harmonized prediction should achieve higher $\Qsq$
-    against CERES observations than any individual kernel.
-  \item The standard deviation across kernel predictions
-    (interkernel spread) should be reduced after optimal
-    weighting.
+  \item The global PLS (Stage~1) should achieve higher $\Qsq$
+    than any individual kernel or simple mean.
+  \item At least one retune approach (Stage~2) should match
+    or exceed the Stage~1 global PLS $\Qsq$.
+  \item RMSE spread reduction should exceed 25\% across
+    all approaches.
   \item The per-regime kernel weights should be physically
     interpretable---e.g., ERA5-based kernels may receive higher
-    weight in extratropical regimes where reanalysis quality is
-    highest.
+    weight in extratropical regimes.
+  \item Thermodynamic compliance should be preserved or
+    improved relative to the global PLS baseline.
 \end{enumerate}
 
 % ============================================================
@@ -504,38 +603,139 @@ NIPALS-PLS, convergence, NaN handling, constrained PLS, physical
 constraints, numerical stability, and distance metrics, plus 6
 workflow tests. All pass at 100\%.
 
-\subsection{Step~1 Results: Kernel Harmonization}
+\subsection{Step~1 Results: Two-Stage Kernel Harmonization}
 
-We evaluate Step~1 on three metrics:
+We evaluate Step~1 using the comprehensive $\Qsq$ dashboard
+on synthetic 11-kernel data ($n = 2000$, 80/20 train/test split).
 
-\paragraph{Interkernel spread before harmonization.}
-Across the 11 kernel sets applied to the tutorial data, the
-standard deviation of total $\Delta R$ predictions ranges from
-$\sim$0.3~\Wmsq{} in the tropics to $>$2~\Wmsq{} in polar
-regions, consistent with the spread documented by
-\citet{Janoski2025}. Surface albedo and cloud feedbacks
-contribute most to the disagreement.
+\paragraph{Stage~1 baseline.}
+On synthetic data, the global PLS achieves $\Qsq = 0.806$,
+exceeding all individual kernel $\Qsq$ values (range 0.390--0.708)
+and the simple mean ($\Qsq = 0.744$). On real CERES + NCEP data,
+the improvement is far more dramatic: all 11 individual kernels
+produce $\Qsq < 0$ (range $-3.90$ to $-48.5$), meaning raw
+predictions are worse than a constant, yet the global PLS achieves
+$\Qsq = 0.544$---transforming collectively biased predictions into
+a skillful ensemble. Figure~\ref{fig:q2dashboard} presents the
+full $\Qsq$ dashboard comparing all methods.
 
-\paragraph{Harmonized $\Qsq$.}
-The constrained PLS harmonization model, trained with SIMCA
-regime routing, should achieve $\Qsq$ exceeding both the simple
-multi-kernel mean and any individual kernel's $\Qsq$ against
-CERES observations. The harmonized $\Qsq$ represents the
-ceiling achievable by optimally combining existing kernels.
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.85\textwidth]{figures/fig2_q2_dashboard.pdf}
+\caption{$\Qsq$ dashboard comparing all steps and versions on
+  real CERES + NCEP data. Individual kernels (gray) all have
+  $\Qsq < 0$ ($-3.9$ to $-48.5$), meaning raw predictions are
+  worse than a constant. The simple mean (blue, $\Qsq = -6.9$)
+  does not help. Stage~1 global PLS (green) achieves $\Qsq =
+  0.544$. Stage~2 retune approaches (red/orange) achieve
+  $\Qsq \approx 0.55$, with Approach~A performing best.}
+\label{fig:q2dashboard}
+\end{figure}
+
+\paragraph{Stage~2 retune comparison.}
+Table~\ref{tab:retune} reports $\Qsq$ and thermodynamic
+compliance for all four retune approaches on both synthetic and
+real data. On synthetic data, all four approaches achieve
+$\Qsq$ within 1\% of the Stage~1 global PLS. On real CERES +
+NCEP data, Approach~A (SIMCA-augmented features) achieves the
+highest $\Qsq = 0.554$, improving over the global PLS
+($\Qsq = 0.544$). Approach~D (regime collapse) fails on real
+data ($\Qsq = -0.02$) but achieves the best energy conservation
+residual (0.42~\Wmsq{} vs.\ $\sim$1.3~\Wmsq{} for other
+approaches), revealing a trade-off between predictive skill and
+thermodynamic compliance.
+
+\begin{table}[t]
+\centering
+\caption{Stage~2 retune comparison on synthetic (Synth.) and real
+(CERES + NCEP) data. SB = Stefan-Boltzmann RMS residual
+(\Wmsq{}), EC = energy conservation residual (\Wmsq{}), RMSE
+Red.\ = interkernel RMSE reduction.}
+\label{tab:retune}
+\small
+\begin{tabular}{@{}lccccccc@{}}
+\toprule
+ & \multicolumn{4}{c}{\textbf{Synthetic}} &
+   \multicolumn{3}{c}{\textbf{Real (CERES + NCEP)}} \\
+\cmidrule(lr){2-5} \cmidrule(lr){6-8}
+\textbf{Method} & $\Qsq$ & SB & EC & RMSE R. &
+  $\Qsq$ & EC & RMSE R. \\
+\midrule
+Global PLS (Stage~1) & 0.806 & 2.74 & 1.53 & 27.5\% &
+  0.544 & 1.61 & 76.4\% \\
+A: SIMCA features    & 0.806 & 2.74 & 1.52 & 27.4\% &
+  0.554 & 1.35 & 76.7\% \\
+B: Regime-weighted   & 0.806 & 2.74 & 1.52 & 27.5\% &
+  0.546 & 1.20 & 76.5\% \\
+C: Two-pass iter.    & 0.806 & 2.74 & 1.50 & 27.4\% &
+  0.547 & 1.32 & 76.5\% \\
+D: Regime collapse   & 0.795 & 2.94 & 1.50 & 25.6\% &
+  $-0.02$ & 0.42 & 64.8\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth]{figures/fig4_retune_comparison.pdf}
+\caption{Multi-metric comparison of the global PLS baseline and
+  four retune approaches on real CERES + NCEP data. From left to
+  right: predictive $\Qsq$, Stefan-Boltzmann (S-B) residual,
+  energy conservation residual (both lower = better), and RMSE
+  reduction percentage (higher = better). Approaches A--C achieve
+  comparable $\Qsq \approx 0.55$ and $\sim$76\% spread reduction,
+  while Approach~D fails ($\Qsq = -0.02$) despite achieving the
+  lowest energy conservation residual (0.42~\Wmsq{}).}
+\label{fig:retune_comparison}
+\end{figure}
 
 \paragraph{Spread reduction.}
-After harmonization, the effective interkernel spread (residual
-standard deviation of the blended prediction minus observation)
-should be substantially reduced relative to the raw 11-kernel
-spread, particularly in high-spread regions (polar, Southern
-Ocean).
+On synthetic data, all approaches reduce the mean interkernel
+RMSE by 25--28\% (from 1.82~\Wmsq{} to $\sim$1.32~\Wmsq{}).
+On real data, the spread reduction is dramatically larger:
+76.4--76.7\% for Approaches A--C (from 53.9~\Wmsq{} to
+$\sim$12.7~\Wmsq{}), reflecting the much larger interkernel
+disagreement when kernels are applied to real atmospheric
+anomalies.
+Figure~\ref{fig:spread_reduction} visualizes the RMSE reduction
+and residual distributions before and after harmonization.
 
-\paragraph{Per-regime kernel weights.}
-The learned regression matrix $\hat{\mathbf{B}}$ reveals which
-kernels are most predictive in each climate regime. We expect
-physically interpretable patterns: e.g., reanalysis-based kernels
-(ERA5, CERES) receiving higher weight in extratropical regimes,
-GCM-based kernels (CAM5, GFDL) in tropical convective regimes.
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth]{figures/fig5_spread_reduction.pdf}
+\caption{Interkernel spread reduction on real CERES + NCEP data.
+  Left: RMSE before (individual kernels, gray) vs.\ after
+  harmonization (colored) for each method, with percentage
+  reduction annotated. Approaches A--C reduce interkernel RMSE by
+  $\sim$76\% (from 53.9~\Wmsq{} to $\sim$12.7~\Wmsq{}). Right:
+  violin plot of residual distributions for all individual kernels
+  (pooled) vs.\ the harmonized best method, showing substantially
+  reduced residual variance.}
+\label{fig:spread_reduction}
+\end{figure}
+
+\paragraph{Per-regime $\Qsq$ variation.}
+The 11 SIMCA regimes show substantial $\Qsq$ variation,
+reflecting that certain kernel-defined regimes are easier to
+predict than others. Regimes where multiple kernels agree
+(high-$\Qsq$ regimes) correspond to well-understood radiative
+environments, while low-$\Qsq$ regimes identify spatial--temporal
+domains where kernel disagreement is greatest and further
+investigation is warranted. Figure~\ref{fig:regime_q2} shows
+the $\Qsq$ variation across all 11 SIMCA kernel regimes.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.85\textwidth]{figures/fig3_regime_q2.pdf}
+\caption{Per-regime $\Qsq$ across the 11 SIMCA kernel regimes on
+  real CERES + NCEP data. Each regime corresponds to the
+  spatial--temporal domain where the named kernel best matches
+  observations. Dashed lines show the global PLS $\Qsq$ (green)
+  and simple mean baseline (blue). Regime quality varies
+  substantially, revealing heterogeneity in kernel predictive
+  skill across climate domains.}
+\label{fig:regime_q2}
+\end{figure}
 
 \subsection{Step~2 Results: Data-Driven Kernels}
 
@@ -608,30 +808,47 @@ improvement across the three approaches.
 \begin{table}[t]
 \centering
 \caption{Progressive improvement from individual kernels (status
-quo) through harmonization (Step~1) to data-driven estimation
-(Step~2).}
+quo) through two-stage harmonization (Step~1) to data-driven
+estimation (Step~2). Synthetic $\Qsq$ from 11-kernel
+benchmark; Real $\Qsq$ from CERES EBAF-TOA Ed4.2
++ NCEP/NCAR Reanalysis 1 (2003--2020).}
 \label{tab:comparison_full}
 \small
-\begin{tabular}{@{}lccc@{}}
+\begin{tabular}{@{}lcccc@{}}
 \toprule
 \textbf{Approach} & \textbf{Features} &
-  \textbf{Interp.?} & \textbf{Real $\Qsq$} \\
+  \textbf{Interp.?} & \textbf{Synth.\ $\Qsq$} &
+  \textbf{Real $\Qsq$} \\
 \midrule
-Best individual kernel & 1 kernel & \checkmark & --- \\
-Simple mean of 11 & 11 (equal wt.) & \checkmark & --- \\
-\textbf{Step~1: Harmonized} & 11 (PLS wt.) & \checkmark & TBD \\
-\textbf{Step~2: Data-driven} & 27 (atm.\ state) & partial & 0.704 \\
+Best individual kernel & 1 kernel & \checkmark & 0.708 & $-3.90$ \\
+Simple mean of 11 & 11 (equal wt.) & \checkmark & 0.744 & $-6.91$ \\
+\textbf{Step~1 Stage~1} & 11 (PLS wt.) & \checkmark & 0.806 & 0.544 \\
+\textbf{Step~1 Stage~2 best} & 11 + regime & \checkmark & 0.806 & 0.554 \\
+\textbf{Step~2: Data-driven} & 27 (atm.\ state) & partial & 0.967 & 0.704 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The key insight is that Step~1 and Step~2 form a continuum:
-Step~1 uses 11 pre-computed features (kernel $\Delta R$
-predictions), while Step~2 uses 27 raw features (atmospheric
+The negative real $\Qsq$ for individual kernels
+($-3.90$ for the best, CloudSat) reveals a critical finding:
+raw kernel predictions applied to real atmospheric anomalies
+contain large systematic biases that make them \emph{worse}
+than a constant prediction. These biases arise from differing
+radiative transfer codes, vertical resolution, and humidity
+treatment across the 11 kernel sets. PLS harmonization
+transforms these biased predictions into a skillful ensemble
+($\Qsq = 0.544$), demonstrating the value of data-driven
+kernel combination over arbitrary kernel selection.
+
+Step~1 and Step~2 form a continuum: Step~1 uses 11 pre-computed
+features (kernel $\Delta R$ predictions) with data-driven
+regime discovery, while Step~2 uses 27 raw features (atmospheric
 state anomalies). Both use constrained PLS with SIMCA routing.
 Step~1 is more interpretable (weights directly map to named
-kernel sets); Step~2 has higher predictive capacity but less
-direct correspondence to traditional kernel decomposition.
+kernel sets and regime structure reveals where each kernel
+excels); Step~2 has higher predictive capacity ($\Qsq = 0.704$
+vs.\ $0.554$) but less direct correspondence to traditional
+kernel decomposition.
 
 % ============================================================
 \section{Feature Comparison with \oldsystem{} v1.2}
@@ -643,7 +860,7 @@ Table~\ref{tab:features} compares capabilities across the
 \begin{table}[t]
 \centering
 \caption{Capability comparison: \oldsystem{} v1.2, Step~1
-(harmonization), and Step~2 (data-driven).}
+(two-stage harmonization), and Step~2 (data-driven).}
 \label{tab:features}
 \small
 \begin{tabular}{@{}p{3.5cm}p{3.5cm}p{3.5cm}p{3.5cm}@{}}
@@ -653,23 +870,23 @@ Table~\ref{tab:features} compares capabilities across the
 \midrule
 \textit{Kernel source} &
   11 pre-computed sets &
-  Optimal blend of 11 &
+  Two-stage: blend + retune &
   Learned from data \\
 \textit{State depend.} &
   --- &
-  16 SIMCA regimes &
+  11 kernel SIMCA regimes &
   16 SIMCA regimes \\
 \textit{Phys.\ constraints} &
   --- &
-  3 types &
+  3 types + thermo.\ compliance &
   3 types \\
 \textit{Predictive $\Qsq$} &
   --- &
-  TBD &
-  0.704 \\
+  0.554 (real) &
+  0.704 (real) \\
 \textit{Interpretability} &
   Direct (named kernels) &
-  High (kernel weights) &
+  High (weights + regimes) &
   Moderate (PLS coeff.) \\
 \textit{GPU accel.} &
   --- &
@@ -677,12 +894,16 @@ Table~\ref{tab:features} compares capabilities across the
   \checkmark{} (JAX) \\
 \textit{Interkernel unc.} &
   \checkmark{} (11-set spread) &
-  Reduced &
+  Reduced 76\% &
   N/A (single kernel) \\
 \textit{Regridding} &
   \checkmark{} (xESMF) &
-  Via \oldsystem{} &
+  \checkmark{} (xESMF compat.) &
   Pre-gridded input \\
+\textit{Retune options} &
+  --- &
+  4 approaches (A--D) &
+  --- \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -703,14 +924,142 @@ entirely and work directly with observational data.
 \label{sec:discussion}
 
 \paragraph{Step~1 as a bridge.}
-The kernel harmonization step serves an important bridging role:
-it demonstrates that the PLS/SIMCA/constraint framework produces
-meaningful improvements on a problem the community already cares
-about (interkernel spread), using tools the community already
-has (the 11 \oldsystem{} kernel sets). This lowers the barrier
-to adoption of the more radical Step~2.
+The two-stage kernel harmonization step serves an important
+bridging role: it demonstrates that the PLS/SIMCA/constraint
+framework produces meaningful improvements on a problem the
+community already cares about (interkernel spread), using tools
+the community already has (the 11 \oldsystem{} kernel sets).
+The data-driven regime discovery (11 kernel regimes via SIMCA)
+reveals \emph{where} each kernel excels, providing diagnostic
+value beyond the harmonized prediction itself. The four retune
+approaches offer flexibility---users can select the method that
+best suits their thermodynamic compliance requirements. This
+lowers the barrier to adoption of the more radical Step~2.
+Figure~\ref{fig:kernel_weights} shows both VIP scores and
+regression coefficients, revealing which kernels are most
+important and how they combine in the optimal blend.
 
-\paragraph{Why $\Qsq = 0.704$ on real data?}
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.75\textwidth]{figures/fig6_kernel_weights.pdf}
+\caption{Kernel importance in the global PLS harmonization on
+  real CERES + NCEP data. Left: Variable Importance in Projection
+  (VIP) scores, which account for variance explained per PLS
+  component---kernels with VIP $> 1$ (green, dashed threshold)
+  contribute above average. Right: PLS regression coefficients
+  (LW component); positive weights (green) contribute
+  constructively, negative weights (red) are partially subtracted
+  to correct collinear biases.}
+\label{fig:kernel_weights}
+\end{figure}
+
+\paragraph{PLS diagnostics and HadGEM3-GA7.1 dominance.}
+Figure~\ref{fig:diagnostics} provides standard PLS/SIMCA
+diagnostic plots. The loading plot (panel~d) reveals a striking
+structure: HadGEM3-GA7.1 sits isolated at loading distance 1.01
+in the opposite quadrant from the other 10 kernels, which cluster
+tightly at distances 0.27--0.35. This is a purely data-driven
+result---HadGEM3-GA7.1 has 3.5$\times$ the prediction standard
+deviation (116~\Wmsq{}) of any other kernel ($\sim$28--34~\Wmsq{}),
+yielding 3.2$\times$ the covariance with CERES observations.
+Since PLS component~1 maximizes covariance, HadGEM3-GA7.1
+dominates: VIP~$= 2.49$ vs.~$0.55$--$0.77$ for the rest.
+
+Paradoxically, HadGEM3-GA7.1 has the \emph{second-lowest}
+correlation with CERES ($r = -0.69$; CAM3 leads at $r = -0.74$)
+and the \emph{worst} MSE by 8$\times$ (16{,}867 vs.\
+1{,}700--2{,}400). But it has the lowest bias ($+1.4$~\Wmsq{}
+vs.\ $-2.3$ to $-4.1$ for others). PLS exploits this: HadGEM3
+provides the largest ``lever arm'' for covariance projection,
+and the remaining kernels correct its overestimation. An
+ablation test confirms this interpretation: dropping HadGEM3
+\emph{improves} $\Qsq$ by $+0.003$ ($0.548$ vs.\ $0.544$),
+because the 3-component model wastes 2 components modeling
+HadGEM3's outlier variance.
+
+The score plot (panel~a) shows HadGEM3's regime (teal) centered
+near the origin ($\bar{t}_1 = +1.1$, $\bar{t}_2 = -1.5$),
+grounding the model, while other regimes project outward (CAM3 at
+$t_1 = +72$, CAM5/HadGEM2 at $t_1 = -36$ to $-41$). Hotelling's
+$T^2$ (panel~b) and DModX (panel~c) characterize model coverage
+and X-space residuals respectively.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth]{figures/fig7_diagnostics.pdf}
+\caption{PLS/SIMCA diagnostics on real CERES + NCEP test data.
+  (a)~Score plot ($t_1$ vs.\ $t_2$) colored by kernel regime;
+  HadGEM3-GA7.1 (regime~10) centers the model.
+  (b)~Hotelling's $T^2$ distribution with 95\% $\chi^2$ limit.
+  (c)~DModX per observation, colored by regime.
+  (d)~Loading plot: HadGEM3-GA7.1 is isolated at distance 1.01;
+  the remaining 10 kernels cluster at 0.27--0.35, revealing
+  their high collinearity.}
+\label{fig:diagnostics}
+\end{figure}
+
+\paragraph{Component selection.}
+Figure~\ref{fig:component_sweep} shows $\Qsq$ as a function
+of the number of PLS components. Component~1 captures 95.4\%
+of X-variance and achieves $\Qsq = 0.523$ (dominated by
+HadGEM3-GA7.1). Component~2 adds 3.5\% X-variance and $\Delta
+\Qsq = +0.019$ (the HadGEM3 vs.\ others contrast). Component~3
+captures CloudSat's unique variance ($p_3 = 0.96$) for $\Delta
+\Qsq = +0.003$. Beyond 3 components, marginal $\Qsq$ gains fall
+below 0.005 per component and approach zero at $A = 7$. Test
+$\Qsq$ never falls below train $R^2$, confirming no overfitting
+with 224{,}000 training samples and 11 features. We use $A = 3$
+as a conservative default; cross-validated component selection is
+left to future work.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.85\textwidth]{figures/fig8_component_sweep.pdf}
+\caption{PLS component selection on real CERES + NCEP data.
+  Left: train $R^2$ and test $\Qsq$ vs.\ number of components;
+  both increase monotonically with no overfitting.
+  Right: marginal $\Qsq$ gain per component. The first 3
+  components (green) capture the dominant structure; components
+  4--8 (gray) add $< 0.005$ each. Dashed red line marks $\Delta
+  \Qsq = 0.001$.}
+\label{fig:component_sweep}
+\end{figure}
+
+\paragraph{11 kernel regimes vs.\ 16 climate-state regimes.}
+The data-driven 11 kernel regimes (one per kernel, assigned by
+$\arg\min_k |{\Delta R^{(k)} - \Delta R^\text{obs}}|$)
+outperform the 16 prescribed climate-state regimes
+($4 \times 2 \times 2$: latitude $\times$ cloud $\times$
+stability) on this data: the 11-regime global PLS achieves
+$\Qsq = 0.544$ vs.\ $\Qsq = 0.452$ for 16-regime SIMCA-blended
+PLS. The prescribed regimes are degenerate---most samples fall
+into only 4 of 16 bins (no convective regimes)---while the
+kernel regimes are well-distributed (10--17\% each for the top 5
+kernels). Cross-tabulation reveals that HadGEM3-GA7.1 dominates
+the subtropical-cloudy, midlatitude, and polar-clear regimes
+(23--32\%), while CAM3, CloudSat, and BMRC take over in
+polar-cloudy and equatorial domains---a physically sensible
+pattern consistent with each model's radiative transfer
+assumptions.
+
+\paragraph{Why $\Qsq < 0$ for individual kernels?}
+On real data, all 11 individual kernel predictions produce
+$\Qsq < 0$ (best: CloudSat with $\Qsq = -3.90$), meaning they
+are worse than predicting the mean $\Delta$OLR. This arises
+because raw kernel predictions $\Delta R^{(k)} = \sum_p
+K_T^{(k)}(p) \Delta T(p) + K_{Ts}^{(k)} \Delta T_s + \ldots$
+contain substantial biases from: (1) differing radiative transfer
+codes and vertical resolution (17--37 pressure levels across
+kernels), (2) nearest-neighbor spatial regridding from kernel grids
+(56--360 meridional points) to the 36$\times$36 observational grid,
+and (3) linearization errors at large anomalies. That PLS
+harmonization transforms these collectively biased predictions
+into a skillful ensemble ($\Qsq = 0.554$) demonstrates the
+power of the data-driven approach: the PLS regression coefficients
+learn to correct systematic biases while preserving the
+information content of each kernel.
+
+\paragraph{Why $\Qsq = 0.704$ on real data (Step~2)?}
 The gap between synthetic ($\Qsq = 0.967$) and real ($\Qsq =
 0.704$) predictive skill reflects physical processes absent from
 our linear framework: aerosol forcing, ocean heat transport,
@@ -719,6 +1068,79 @@ components. The $\Qsq = 0.704$ nonetheless indicates that 70\% of
 TOA flux variance is explained by the linear atmospheric state
 model---consistent with the dominance of radiative feedbacks over
 dynamical contributions at monthly--interannual timescales.
+
+\paragraph{Step~2 feature importance and diagnostics.}
+Figure~\ref{fig:step2_vip} decomposes the 27 atmospheric features by
+Variable Importance in Projection (VIP) and PLS regression coefficients.
+Temperature features at lower tropospheric levels (T$_{1000}$--T$_{850}$)
+and surface temperature dominate the VIP ranking, consistent with the
+Planck feedback being the strongest radiative response.  Humidity features
+(q$_{1000}$--q$_{300}$) contribute secondary but physically meaningful
+variance through the water vapour feedback.  Cloud fraction shows a
+moderate VIP, reflecting the known large radiative sensitivity to cloud
+changes.  The regression coefficients (panel~b) reveal the sign structure:
+surface warming increases OLR (positive LW coefficient), while humidity
+increases at lower levels reduce OLR through enhanced greenhouse trapping
+(negative LW coefficient)---both physically consistent with radiative
+transfer theory.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.95\textwidth]{figures/fig9_step2_vip.pdf}
+\caption{Step~2 data-driven kernel: variable importance in projection (VIP)
+  and PLS regression coefficients for 27 atmospheric features.  Panel~(a):
+  VIP scores sorted by importance; the dashed line marks VIP~=~1 threshold.
+  Blue bars: temperature levels; teal: humidity levels; amber: surface
+  temperature; orange: cloud fraction.  Panel~(b): regression coefficients
+  for the longwave ($\Delta R_\mathrm{LW}$) component, revealing the sign
+  and magnitude of each feature's contribution to TOA flux prediction.
+  Fitted on 13,219 real CERES+NCEP observations (2003--2017).}
+\label{fig:step2_vip}
+\end{figure}
+
+Figure~\ref{fig:step2_diagnostics} presents PLS diagnostics for the
+10-component Step~2 model.  The score plot (panel~a) colours observations
+by surface temperature anomaly, revealing a clear temperature gradient along
+the first latent variable---confirming that $t_1$ captures the dominant
+Planck-driven radiative response.  Hotelling's $T^2$ (panel~b) and DModX
+(panel~c) identify observations with unusual leverage or poor model fit,
+respectively.  The loading plot (panel~d) shows the 27-feature positions in
+latent space: temperature features cluster tightly (high collinearity across
+pressure levels), humidity features form a separate cluster, and cloud
+fraction sits isolated---consistent with the distinct physical mechanisms of
+Planck, water vapour, and cloud feedbacks.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.95\textwidth]{figures/fig10_step2_diagnostics.pdf}
+\caption{Step~2 PLS diagnostics (10 components, 27 atmospheric features,
+  real CERES+NCEP data).  (a)~Score plot $t_1$ vs $t_2$, coloured by
+  surface temperature anomaly.  (b)~Hotelling's $T^2$ distribution with
+  95\% critical limit.  (c)~DModX (RMS X-residual) per observation,
+  coloured by cloud fraction anomaly.  (d)~Loading plot showing the
+  position of all 27 features in PLS latent space.}
+\label{fig:step2_diagnostics}
+\end{figure}
+
+Figure~\ref{fig:step2_components} shows the component sweep for the Step~2
+model.  The first component alone captures substantial $R^2$ and $Q^2$
+(the Planck response), with diminishing marginal gains beyond
+$\sim$5 components.  The marginal $\Delta Q^2$ plot (panel~b) shows
+that components 1--5 each contribute meaningfully, while components beyond
+10 provide negligible improvement.  The gap between train $R^2$ and test
+$Q^2$ remains small, indicating no overfitting despite the 10-component
+model.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.85\textwidth]{figures/fig11_step2_component_sweep.pdf}
+\caption{Step~2 component selection: $R^2$ (train) and $Q^2$ (test) as a
+  function of the number of PLS components.  Left: cumulative performance;
+  right: marginal $\Delta Q^2$ per added component.  The dashed vertical
+  line marks $A=10$ (the value used).  Fitted on 13,219 real observations;
+  tested on 3,305 holdout observations (2018--2020).}
+\label{fig:step2_components}
+\end{figure}
 
 \paragraph{Constraint weight tuning.}
 Constraint over-regularization is a practical concern: weights
@@ -748,13 +1170,19 @@ v1.2 that addresses the interkernel spread problem and
 introduces data-driven kernel estimation:
 
 \begin{enumerate}[noitemsep]
-  \item \textbf{Step~1 (Kernel Harmonization):} Constrained
-    NIPALS-PLS with SIMCA regime routing optimally combines the
-    11 \oldsystem{} kernel sets, reducing interkernel spread
-    while maintaining interpretability. This step builds
-    directly on \citeauthor{Janoski2025}'s kernel repository
-    and requires no new data sources beyond the existing kernels
-    and CERES observations.
+  \item \textbf{Step~1 (Two-Stage Kernel Harmonization):}
+    Stage~1 preserves the \oldsystem{} kernels, fitting a global
+    PLS and discovering 11 data-driven SIMCA regimes. Stage~2
+    retunes a global PLS using the regime structure via four
+    competing approaches (SIMCA-augmented features, regime-weighted
+    PLS, iterative refinement, regime collapse), achieving
+    $\Qsq = 0.806$ on synthetic benchmarks and $\Qsq = 0.554$ on
+    real CERES + NCEP data with 76\% interkernel RMSE reduction.
+    Individual kernels achieve $\Qsq < 0$ on real data, demonstrating
+    the necessity of data-driven harmonization. A comprehensive
+    $\Qsq$ dashboard and thermodynamic compliance analysis enable
+    principled method selection. xESMF regridding maintains full
+    backward compatibility with \oldsystem{} v1.2.
   \item \textbf{Step~2 (Data-Driven Extension):} The same
     PLS/SIMCA/constraint framework learns kernel sensitivities
     directly from atmospheric state observations, achieving
@@ -769,7 +1197,7 @@ that the constrained PLS approach is a general tool for
 radiative kernel estimation---whether combining existing kernels
 or learning new ones from scratch.
 
-The package is validated with 57 tests (44 unit + 6 workflow + 7
+The package is validated with 57 tests (44 unit + 6 workflow + 9
 scientific) at 100\% pass rate, including real observational data
 from CERES EBAF-TOA Ed4.2 and NCEP/NCAR Reanalysis~1.
 
@@ -816,7 +1244,7 @@ Polvani, L.~M. (2025).
 ClimKern v1.2: a new Python package and kernel repository for
 calculating radiative feedbacks.
 \textit{Geoscientific Model Development}, 18:3065--3079.
-\doi{10.5194/gmd-18-3065-2025}
+\url{https://doi.org/10.5194/gmd-18-3065-2025}
 
 \bibitem[Kalnay et~al., 1996]{Kalnay1996}
 Kalnay, E., et~al. (1996).
