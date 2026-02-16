@@ -6,7 +6,7 @@ Two-Step Radiative Kernel Harmonization and Data-Driven Estimation via Constrain
 
 ClimKern-Retune extends [ClimKern v1.2](https://github.com/tyfolino/climkern) (Janoski et al., 2025) with a two-step approach that bridges the gap between discrete pre-computed kernels and fully data-driven kernel estimation.
 
-**Step 1 (Kernel Harmonization):** The 11 pre-computed kernel sets in ClimKern v1.2 disagree by up to 50% in polar regions. Step 1 treats them as an ensemble: a global constrained NIPALS-PLS baseline combines the 11 kernel predictions, then SIMCA discovers 11 data-driven regimes (one per kernel) for regime-weighted retuning. Achieves Q² = 0.554 on real CERES+NCEP holdout data with 76% interkernel RMSE reduction.
+**Step 1 (Kernel Harmonization):** The 11 pre-computed kernel sets in ClimKern v1.2 disagree by up to 50% in polar regions. When properly applied with pressure-thickness weighting, Clausius-Clapeyron humidity normalization, and troposphere-only integration, individual kernels achieve Q² = 0.48-0.64 on real data. Step 1 treats them as an ensemble: a global constrained NIPALS-PLS baseline optimally weights the 11 kernel predictions (Q² = 0.652), then SIMCA discovers 11 data-driven regimes for regime-weighted retuning (Q² = 0.655).
 
 **Step 2 (Data-Driven Kernels):** The same PLS/SIMCA/constraint framework learns kernel sensitivities directly from 27 atmospheric state features (temperature profiles, humidity profiles, surface temperature, cloud fraction). Achieves Q² = 0.704 on real holdout data with physically correct feedback signs.
 
@@ -19,7 +19,7 @@ ClimKern-Retune extends [ClimKern v1.2](https://github.com/tyfolino/climkern) (J
 - **Q² dashboard** with thermodynamic compliance for principled method selection
 - **VIP analysis and PLS diagnostics** (Hotelling's T², DModX, loading plots)
 - **Observational training** on CERES EBAF TOA Ed4.2 + NCEP/NCAR Reanalysis 1
-- **Validated on real data**: Q² = 0.554 (Step 1), Q² = 0.704 (Step 2)
+- **Validated on real data**: Q² = 0.655 (Step 1), Q² = 0.704 (Step 2)
 
 ### Mathematical Framework
 
@@ -197,7 +197,7 @@ Step 2: X = atmospheric state anomalies (n × 27):
 
 ### Data-Driven Kernel Regimes (Step 1)
 
-11 SIMCA regimes, one per kernel set, assigned by residual proximity to CERES observations. Each regime captures the conditions under which a particular kernel best predicts the observed TOA flux. Q² = 0.544 with regime-weighted blending.
+11 SIMCA regimes, one per kernel set, assigned by residual proximity to CERES observations. Each regime captures the conditions under which a particular kernel best predicts the observed TOA flux. Q² = 0.652 with global PLS weighting.
 
 ### Prescribed Climate-State Regimes (Step 2)
 
@@ -210,7 +210,7 @@ Step 2: X = atmospheric state anomalies (n × 27):
 | Midlatitude (35-60°) | | |
 | Polar (\|lat\| >= 60°) | | |
 
-Note: On real CERES+NCEP data, the 11 data-driven kernel regimes (Q² = 0.544) outperform the 16 prescribed regimes (Q² = 0.452).
+Note: On real CERES+NCEP data, the 11 data-driven kernel regimes (Q² = 0.652) outperform the 16 prescribed regimes.
 
 ## Physical Constraints
 
@@ -253,10 +253,10 @@ Validated on CERES EBAF TOA Ed4.2 + NCEP/NCAR Reanalysis 1 (2003-2020):
 
 | Step | Method | Real Q² | Notes |
 |---|---|---|---|
-| 1 | Best individual kernel | < 0 | Individual kernels fail on real data |
-| 1 | Simple mean of 11 | 0.290 | Naive averaging |
-| 1 | Global PLS (Stage 1) | 0.544 | Constrained NIPALS-PLS |
-| 1 | Best retune (Stage 2) | 0.554 | SIMCA-augmented features |
+| 1 | Best individual kernel | 0.640 | HadGEM2 (range: 0.48-0.64) |
+| 1 | Simple mean of 11 | 0.626 | Equal-weight averaging |
+| 1 | Global PLS (Stage 1) | 0.652 | Constrained NIPALS-PLS |
+| 1 | Best retune (Stage 2) | 0.655 | SIMCA-augmented features |
 | 2 | Data-driven (27 features) | 0.704 | 10-component PLS |
 
 Physical consistency verified:

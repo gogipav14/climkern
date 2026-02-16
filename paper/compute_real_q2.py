@@ -118,6 +118,10 @@ def _extract_kernel_arrays(kernel_name: str, kernel_dir: Path) -> dict:
     order_2d = _get_axis_order(lw_ts_dims, ["time", "lat", "lon"])
     lw_ts = np.transpose(lw_ts_raw, order_2d)  # (12, n_lat, n_lon)
 
+    # Normalize pressure levels to hPa (some kernels use Pa)
+    if k_plev[0] > 10000:
+        k_plev = k_plev / 100.0
+
     # Ensure lat is ascending
     if len(k_lat) > 1 and k_lat[0] > k_lat[-1]:
         k_lat = k_lat[::-1]
@@ -162,12 +166,84 @@ def _regrid_nearest(
     return src_arr[np.ix_(lat_idx, lon_idx)]
 
 
+def _calc_qs_numpy(temp_K: np.ndarray, pres_hPa: np.ndarray) -> np.ndarray:
+    """Saturated specific humidity (kg/kg) via Buck (1981).
+
+    Matches ClimKern's ``__calc_qs__`` but operates on numpy arrays.
+
+    Parameters
+    ----------
+    temp_K : array  Temperature in Kelvin.
+    pres_hPa : array  Pressure in hPa (broadcastable with temp_K).
+    """
+    temp_c = temp_K - 273.15
+    esl = (1.0007 + 3.46e-6 * pres_hPa) * 6.1121 * np.exp(
+        (17.502 * temp_c) / (240.97 + temp_c)
+    )
+    esi = (1.0003 + 4.18e-6 * pres_hPa) * 6.1115 * np.exp(
+        (22.452 * temp_c) / (272.55 + temp_c)
+    )
+    wsl = 0.622 * esl / (pres_hPa - esl)
+    wsi = 0.622 * esi / (pres_hPa - esi)
+    ws = np.where(temp_c > 0, wsl, wsi)
+    return ws / (1.0 + ws)
+
+
+def _compute_dp_troposphere(
+    data_levels: np.ndarray,
+    data_lat: np.ndarray,
+    p_sfc: float = 1013.25,
+) -> np.ndarray:
+    """Compute pressure-layer thickness (hPa) with tropopause masking.
+
+    Follows ClimKern's ``get_dp`` logic: midpoints between levels,
+    bounded by surface pressure below and TOA above, clipped at the
+    tropopause.
+
+    Parameters
+    ----------
+    data_levels : (n_levels,)  Pressure levels in hPa, descending.
+    data_lat : (n_lat,)  Latitude in degrees.
+    p_sfc : Surface pressure in hPa.
+
+    Returns
+    -------
+    dp : (n_levels, n_lat)  Layer thickness in hPa.
+    """
+    levels = np.sort(data_levels)[::-1]  # ensure descending (surface first)
+    n_levels = len(levels)
+    n_lat = len(data_lat)
+
+    # Midpoints between adjacent levels
+    mids = (levels[:-1] + levels[1:]) / 2.0  # (n_levels-1,)
+
+    # Boundaries: [p_sfc, mid_0, mid_1, ..., mid_{n-2}, 0]
+    bounds = np.concatenate([[p_sfc], mids, [0.0]])  # (n_levels+1,)
+
+    # Tropopause: 100 hPa at equator, 300 hPa at poles (ClimKern convention)
+    p_trop = 300.0 - 200.0 * np.cos(np.deg2rad(data_lat))  # (n_lat,)
+
+    dp = np.zeros((n_levels, n_lat))
+    for i in range(n_levels):
+        bot = bounds[i]      # bottom of layer (higher pressure)
+        top = bounds[i + 1]  # top of layer (lower pressure)
+
+        # Clip: top cannot be above tropopause, bot cannot be below surface
+        bot_clipped = np.minimum(bot, p_sfc)
+        top_clipped = np.maximum(top, p_trop)  # per latitude
+
+        dp[i, :] = np.maximum(bot_clipped - top_clipped, 0.0)
+
+    return dp
+
+
 def compute_kernel_prediction(
     kernel_data: dict,
     dT: np.ndarray,          # (n_time, n_levels, n_lat, n_lon) temperature anomaly [K]
     dTs: np.ndarray,         # (n_time, n_lat, n_lon) surface temp anomaly [K]
     dq: np.ndarray,          # (n_time, n_q_levels, n_lat, n_lon) humidity anomaly [kg/kg]
     q_clim: np.ndarray,      # (n_q_levels, n_lat, n_lon) climatological humidity [kg/kg]
+    T_clim: np.ndarray,      # (n_levels, n_lat, n_lon) climatological temperature [K]
     data_levels: np.ndarray,  # pressure levels of data [hPa]
     q_level_idx: np.ndarray,  # indices of levels with humidity data
     data_lat: np.ndarray,     # data lat coordinates
@@ -177,7 +253,13 @@ def compute_kernel_prediction(
     """
     Compute ΔR prediction from one kernel applied to observed anomalies.
 
-    Returns (n_time, n_lat, n_lon) array of predicted ΔR.
+    Follows ClimKern methodology (Janoski et al. 2025):
+      - Pressure-thickness weighting (dp / 10000 Pa)
+      - Troposphere-only integration (tropopause from cos(lat) formula)
+      - Clausius-Clapeyron-normalized humidity (Pendergrass method)
+      - Sign convention: returns predicted ΔOLR (positive = more outgoing)
+
+    Returns (n_time, n_lat, n_lon) array of predicted ΔOLR.
     """
     n_time, n_levels, n_lat, n_lon = dT.shape
     delta_R = np.zeros((n_time, n_lat, n_lon))
@@ -189,7 +271,42 @@ def compute_kernel_prediction(
     k_lon = kernel_data["lon"]
     k_plev = kernel_data["plev"]
 
-    # Find nearest kernel pressure level index for each data level
+    # --- Pressure-thickness weighting ---
+    # dp in hPa, shape (n_levels, n_lat); divide by 100 to get dp(Pa)/10000
+    dp_hPa = _compute_dp_troposphere(data_levels, data_lat)
+    dp_norm = dp_hPa / 100.0  # = dp(Pa) / 10000 Pa
+    # Broadcast to (n_levels, n_lat, n_lon)
+    dp_weight = dp_norm[:, :, None] * np.ones(n_lon)[None, None, :]
+
+    # --- Humidity: Clausius-Clapeyron normalization (Pendergrass method) ---
+    # Physical formula: ΔR_q = Σ K_q · Δq / (RH · dqsdT) · dp/10000
+    # All humidity quantities must be in kg/kg for consistency with qs.
+    # The merged dataset stores q in g/kg, so convert here.
+    n_q = len(q_level_idx)
+    q_levels_hPa = data_levels[q_level_idx]
+    T_clim_q = T_clim[q_level_idx, :, :]     # (n_q, n_lat, n_lon) in K
+
+    # Convert humidity from g/kg to kg/kg
+    q_clim_kgkg = q_clim / 1000.0             # (n_q, n_lat, n_lon)
+
+    # Saturated specific humidity via Buck (1981), in kg/kg
+    pres_q = q_levels_hPa[:, None, None] * np.ones((1, n_lat, n_lon))
+    qs0 = _calc_qs_numpy(T_clim_q, pres_q)
+    qs1 = _calc_qs_numpy(T_clim_q + 1.0, pres_q)
+    dqsdT = qs1 - qs0                         # CC slope [kg/kg/K]
+
+    # Relative humidity
+    safe_qs0 = np.where(qs0 > 1e-15, qs0, 1e-15)
+    RH = np.clip(q_clim_kgkg / safe_qs0, 0.01, 1.5)
+
+    # CC denominator: RH * dqsdT  [kg/kg/K]
+    cc_denom = RH * dqsdT
+    cc_denom = np.where(np.abs(cc_denom) > 1e-12, cc_denom, 1e-12)
+
+    # dp weights for humidity levels only
+    dp_q = dp_weight[q_level_idx, :, :]  # (n_q, n_lat, n_lon)
+
+    # --- Map data levels to nearest kernel levels ---
     data_to_kplev_idx = {}
     for i, p in enumerate(data_levels):
         data_to_kplev_idx[i] = int(np.argmin(np.abs(k_plev - p)))
@@ -198,8 +315,7 @@ def compute_kernel_prediction(
     for i in q_level_idx:
         q_to_kplev_idx[int(i)] = int(np.argmin(np.abs(k_plev - data_levels[i])))
 
-    # Pre-regrid all monthly kernels to data grid
-    # Temperature kernels: (12, n_levels, n_lat, n_lon)
+    # --- Regrid kernels to data grid ---
     K_T_regrid = np.zeros((12, n_levels, n_lat, n_lon))
     for m in range(12):
         for data_lev_idx in range(n_levels):
@@ -208,15 +324,12 @@ def compute_kernel_prediction(
                 lw_t[m, kp_idx], k_lat, k_lon, data_lat, data_lon,
             )
 
-    # Surface temperature kernel: (12, n_lat, n_lon)
     K_Ts_regrid = np.zeros((12, n_lat, n_lon))
     for m in range(12):
         K_Ts_regrid[m] = _regrid_nearest(
             lw_ts[m], k_lat, k_lon, data_lat, data_lon,
         )
 
-    # Humidity kernels: (12, n_q_levels, n_lat, n_lon)
-    n_q = len(q_level_idx)
     K_q_regrid = np.zeros((12, n_q, n_lat, n_lon))
     for m in range(12):
         for qi, data_lev_idx in enumerate(q_level_idx):
@@ -225,35 +338,39 @@ def compute_kernel_prediction(
                 lw_q[m, kp_idx], k_lat, k_lon, data_lat, data_lon,
             )
 
-    # Replace NaNs with 0 in regridded kernels
     K_T_regrid = np.nan_to_num(K_T_regrid, nan=0.0)
     K_Ts_regrid = np.nan_to_num(K_Ts_regrid, nan=0.0)
     K_q_regrid = np.nan_to_num(K_q_regrid, nan=0.0)
 
-    # Compute ΔR for each timestep (vectorized per month)
+    # --- Compute ΔR per month (vectorized) ---
     for m in range(12):
         t_mask = month_idx == m
         if not np.any(t_mask):
             continue
 
-        # Temperature contribution: Σ_p K_T(p) * ΔT(p) for all timesteps in month
-        # dT[t_mask] shape: (n_t, n_levels, n_lat, n_lon)
-        # K_T_regrid[m] shape: (n_levels, n_lat, n_lon)
+        # Temperature: Σ_p K_T(p) * ΔT(p) * dp(p)/10000
         delta_R[t_mask] += np.sum(
-            K_T_regrid[m][None, :, :, :] * dT[t_mask], axis=1,
+            K_T_regrid[m][None, :, :, :] * dT[t_mask] * dp_weight[None, :, :, :],
+            axis=1,
         )
 
-        # Surface temperature contribution
+        # Surface temperature: K_Ts * ΔTs (no dp weighting for 2D kernel)
         delta_R[t_mask] += K_Ts_regrid[m][None, :, :] * dTs[t_mask]
 
-        # Humidity contribution: Σ_p K_q(p) * Δq(p) / q_clim(p)
-        safe_q = np.where(np.abs(q_clim) > 1e-10, q_clim, 1e-10)
-        dq_frac = np.nan_to_num(dq[t_mask] / safe_q[None, :, :, :], nan=0.0)
+        # Humidity: Σ_p K_q(p) · Δq(p) / (RH(p)·dqsdT(p)) · dp(p)/10000
+        # dq is in g/kg → convert to kg/kg
+        dq_kgkg = dq[t_mask] / 1000.0
+        dq_kgkg = np.nan_to_num(dq_kgkg, nan=0.0)
         delta_R[t_mask] += np.sum(
-            K_q_regrid[m][None, :, :, :] * dq_frac, axis=1,
+            K_q_regrid[m][None, :, :, :]
+            * dq_kgkg / cc_denom[None, :, :, :]
+            * dp_q[None, :, :, :],
+            axis=1,
         )
 
-    return delta_R
+    # Negate: kernels use feedback convention (positive = energy into system)
+    # but ΔOLR uses observational convention (positive = more outgoing)
+    return -delta_R
 
 
 # ============================================================
@@ -348,6 +465,7 @@ def compute_all_kernel_predictions(
                 dTs=dTs,
                 dq=dq_valid,
                 q_clim=q_clim_valid,
+                T_clim=T_clim,
                 data_levels=levels,
                 q_level_idx=q_level_idx,
                 data_lat=lat,

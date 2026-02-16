@@ -81,12 +81,13 @@ dual \jax{}/\numpy{} backend enabling GPU-accelerated exact
 autodifferentiation.
 
 Validated against CERES EBAF-TOA Ed4.2 and NCEP/NCAR Reanalysis
-data (2003--2020), Step~1 transforms individually biased kernel
-predictions ($\Qsq < 0$ for all 11 kernels) into a skillful
-harmonized ensemble ($\Qsq = 0.554$ on real holdout data with
-76\% interkernel RMSE reduction). Step~2 achieves $\Qsq = 0.967$
+data (2003--2020), Step~1 shows that properly applied individual
+kernels already achieve $\Qsq \approx 0.60$--$0.64$; PLS
+ensemble weighting modestly improves to $\Qsq = 0.655$.
+Step~2 achieves $\Qsq = 0.967$
 on synthetic benchmarks and $\Qsq = 0.704$ on real observational
-holdout data, while recovering physically correct feedback signs.
+holdout data---the gain over Step~1 coming primarily from the
+inclusion of cloud-fraction information absent from the LW kernels.
 \end{abstract}
 
 % ============================================================
@@ -612,23 +613,24 @@ on synthetic 11-kernel data ($n = 2000$, 80/20 train/test split).
 On synthetic data, the global PLS achieves $\Qsq = 0.806$,
 exceeding all individual kernel $\Qsq$ values (range 0.390--0.708)
 and the simple mean ($\Qsq = 0.744$). On real CERES + NCEP data,
-the improvement is far more dramatic: all 11 individual kernels
-produce $\Qsq < 0$ (range $-3.90$ to $-48.5$), meaning raw
-predictions are worse than a constant, yet the global PLS achieves
-$\Qsq = 0.544$---transforming collectively biased predictions into
-a skillful ensemble. Figure~\ref{fig:q2dashboard} presents the
-full $\Qsq$ dashboard comparing all methods.
+individual kernels achieve $\Qsq$ between $0.48$ (CloudSat)
+and $0.64$ (HadGEM2) when properly applied with
+pressure-thickness weighting, Clausius--Clapeyron humidity
+normalization, and troposphere-only integration---confirming
+that the kernel method is physically sound. The global PLS
+modestly improves to $\Qsq = 0.652$ by optimally weighting the
+11 predictions. Figure~\ref{fig:q2dashboard} presents the full
+$\Qsq$ dashboard comparing all methods.
 
 \begin{figure}[t]
 \centering
 \includegraphics[width=0.85\textwidth]{figures/fig2_q2_dashboard.pdf}
 \caption{$\Qsq$ dashboard comparing all steps and versions on
-  real CERES + NCEP data. Individual kernels (gray) all have
-  $\Qsq < 0$ ($-3.9$ to $-48.5$), meaning raw predictions are
-  worse than a constant. The simple mean (blue, $\Qsq = -6.9$)
-  does not help. Stage~1 global PLS (green) achieves $\Qsq =
-  0.544$. Stage~2 retune approaches (red/orange) achieve
-  $\Qsq \approx 0.55$, with Approach~A performing best.}
+  real CERES + NCEP data. Individual kernels (gray) achieve
+  $\Qsq \approx 0.48$--$0.64$. The simple mean (blue, $\Qsq = 0.626$)
+  is competitive. Stage~1 global PLS (green) achieves $\Qsq =
+  0.652$. Stage~2 retune approaches (red/orange) achieve
+  $\Qsq \approx 0.65$, with Approach~A performing best ($\Qsq = 0.655$).}
 \label{fig:q2dashboard}
 \end{figure}
 
@@ -638,10 +640,10 @@ compliance for all four retune approaches on both synthetic and
 real data. On synthetic data, all four approaches achieve
 $\Qsq$ within 1\% of the Stage~1 global PLS. On real CERES +
 NCEP data, Approach~A (SIMCA-augmented features) achieves the
-highest $\Qsq = 0.554$, improving over the global PLS
-($\Qsq = 0.544$). Approach~D (regime collapse) fails on real
-data ($\Qsq = -0.02$) but achieves the best energy conservation
-residual (0.42~\Wmsq{} vs.\ $\sim$1.3~\Wmsq{} for other
+highest $\Qsq = 0.655$, improving over the global PLS
+($\Qsq = 0.652$). Approach~D (regime collapse) degrades
+to $\Qsq = 0.550$, but achieves the best energy conservation
+residual (0.74~\Wmsq{} vs.\ $\sim$1.0~\Wmsq{} for other
 approaches), revealing a trade-off between predictive skill and
 thermodynamic compliance.
 
@@ -662,15 +664,15 @@ Red.\ = interkernel RMSE reduction.}
   $\Qsq$ & EC & RMSE R. \\
 \midrule
 Global PLS (Stage~1) & 0.806 & 2.74 & 1.53 & 27.5\% &
-  0.544 & 1.61 & 76.4\% \\
+  0.652 & 1.12 & 5.3\% \\
 A: SIMCA features    & 0.806 & 2.74 & 1.52 & 27.4\% &
-  0.554 & 1.35 & 76.7\% \\
+  0.655 & 1.01 & 5.7\% \\
 B: Regime-weighted   & 0.806 & 2.74 & 1.52 & 27.5\% &
-  0.546 & 1.20 & 76.5\% \\
+  0.653 & 1.08 & 5.4\% \\
 C: Two-pass iter.    & 0.806 & 2.74 & 1.50 & 27.4\% &
-  0.547 & 1.32 & 76.5\% \\
+  0.651 & 1.14 & 5.2\% \\
 D: Regime collapse   & 0.795 & 2.94 & 1.50 & 25.6\% &
-  $-0.02$ & 0.42 & 64.8\% \\
+  0.550 & 0.74 & $-7.7\%$ \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -683,20 +685,19 @@ D: Regime collapse   & 0.795 & 2.94 & 1.50 & 25.6\% &
   right: predictive $\Qsq$, Stefan-Boltzmann (S-B) residual,
   energy conservation residual (both lower = better), and RMSE
   reduction percentage (higher = better). Approaches A--C achieve
-  comparable $\Qsq \approx 0.55$ and $\sim$76\% spread reduction,
-  while Approach~D fails ($\Qsq = -0.02$) despite achieving the
-  lowest energy conservation residual (0.42~\Wmsq{}).}
+  comparable $\Qsq \approx 0.65$ and $\sim$5--6\% spread reduction,
+  while Approach~D achieves lower $\Qsq = 0.550$ but the best
+  energy conservation residual (0.74~\Wmsq{}).}
 \label{fig:retune_comparison}
 \end{figure}
 
 \paragraph{Spread reduction.}
 On synthetic data, all approaches reduce the mean interkernel
 RMSE by 25--28\% (from 1.82~\Wmsq{} to $\sim$1.32~\Wmsq{}).
-On real data, the spread reduction is dramatically larger:
-76.4--76.7\% for Approaches A--C (from 53.9~\Wmsq{} to
-$\sim$12.7~\Wmsq{}), reflecting the much larger interkernel
-disagreement when kernels are applied to real atmospheric
-anomalies.
+On real data, Approaches A--C achieve modest RMSE reductions of
+5--6\%, consistent with the fact that individual kernels already
+agree well ($\Qsq$ range 0.48--0.64) once properly applied with
+pressure-thickness weighting and Clausius--Clapeyron normalization.
 Figure~\ref{fig:spread_reduction} visualizes the RMSE reduction
 and residual distributions before and after harmonization.
 
@@ -706,11 +707,11 @@ and residual distributions before and after harmonization.
 \caption{Interkernel spread reduction on real CERES + NCEP data.
   Left: RMSE before (individual kernels, gray) vs.\ after
   harmonization (colored) for each method, with percentage
-  reduction annotated. Approaches A--C reduce interkernel RMSE by
-  $\sim$76\% (from 53.9~\Wmsq{} to $\sim$12.7~\Wmsq{}). Right:
-  violin plot of residual distributions for all individual kernels
-  (pooled) vs.\ the harmonized best method, showing substantially
-  reduced residual variance.}
+  reduction annotated. Approaches A--C achieve modest RMSE
+  reductions ($\sim$5--6\%), consistent with the already-good
+  agreement among properly applied kernels. Right: violin plot
+  of residual distributions for all individual kernels (pooled)
+  vs.\ the harmonized best method.}
 \label{fig:spread_reduction}
 \end{figure}
 
@@ -820,35 +821,35 @@ benchmark; Real $\Qsq$ from CERES EBAF-TOA Ed4.2
   \textbf{Interp.?} & \textbf{Synth.\ $\Qsq$} &
   \textbf{Real $\Qsq$} \\
 \midrule
-Best individual kernel & 1 kernel & \checkmark & 0.708 & $-3.90$ \\
-Simple mean of 11 & 11 (equal wt.) & \checkmark & 0.744 & $-6.91$ \\
-\textbf{Step~1 Stage~1} & 11 (PLS wt.) & \checkmark & 0.806 & 0.544 \\
-\textbf{Step~1 Stage~2 best} & 11 + regime & \checkmark & 0.806 & 0.554 \\
+Best individual kernel & 1 kernel & \checkmark & 0.708 & 0.640 \\
+Simple mean of 11 & 11 (equal wt.) & \checkmark & 0.744 & 0.626 \\
+\textbf{Step~1 Stage~1} & 11 (PLS wt.) & \checkmark & 0.806 & 0.652 \\
+\textbf{Step~1 Stage~2 best} & 11 + regime & \checkmark & 0.806 & 0.655 \\
 \textbf{Step~2: Data-driven} & 27 (atm.\ state) & partial & 0.967 & 0.704 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The negative real $\Qsq$ for individual kernels
-($-3.90$ for the best, CloudSat) reveals a critical finding:
-raw kernel predictions applied to real atmospheric anomalies
-contain large systematic biases that make them \emph{worse}
-than a constant prediction. These biases arise from differing
-radiative transfer codes, vertical resolution, and humidity
-treatment across the 11 kernel sets. PLS harmonization
-transforms these biased predictions into a skillful ensemble
-($\Qsq = 0.544$), demonstrating the value of data-driven
-kernel combination over arbitrary kernel selection.
+When properly applied---with pressure-thickness weighting,
+Clausius--Clapeyron humidity normalization, troposphere-only
+integration, and correct sign conventions---individual kernels
+achieve $\Qsq$ between $0.48$ (CloudSat) and $0.64$ (HadGEM2).
+PLS ensemble weighting modestly improves to $\Qsq = 0.652$
+(global) or $0.655$ (best retune), a gain of roughly 1.5
+percentage points. The remaining $\sim$35\% of unexplained
+$\Delta$OLR variance is primarily the LW cloud radiative
+effect, which is computed as a residual in the kernel framework
+and therefore absent from the kernel predictions.
 
 Step~1 and Step~2 form a continuum: Step~1 uses 11 pre-computed
 features (kernel $\Delta R$ predictions) with data-driven
 regime discovery, while Step~2 uses 27 raw features (atmospheric
-state anomalies). Both use constrained PLS with SIMCA routing.
-Step~1 is more interpretable (weights directly map to named
-kernel sets and regime structure reveals where each kernel
-excels); Step~2 has higher predictive capacity ($\Qsq = 0.704$
-vs.\ $0.554$) but less direct correspondence to traditional
-kernel decomposition.
+state anomalies) including cloud fraction. Both use constrained
+PLS with SIMCA routing. Step~1 is more interpretable (weights
+directly map to named kernel sets and regime structure reveals
+where each kernel excels); Step~2 achieves $\Qsq = 0.704$
+by explicitly modeling cloud-fraction changes, closing roughly
+half the gap left by the missing cloud kernel.
 
 % ============================================================
 \section{Feature Comparison with \oldsystem{} v1.2}
@@ -882,7 +883,7 @@ Table~\ref{tab:features} compares capabilities across the
   3 types \\
 \textit{Predictive $\Qsq$} &
   --- &
-  0.554 (real) &
+  0.655 (real) &
   0.704 (real) \\
 \textit{Interpretability} &
   Direct (named kernels) &
@@ -894,7 +895,7 @@ Table~\ref{tab:features} compares capabilities across the
   \checkmark{} (JAX) \\
 \textit{Interkernel unc.} &
   \checkmark{} (11-set spread) &
-  Reduced 76\% &
+  Reduced $\sim$6\% &
   N/A (single kernel) \\
 \textit{Regridding} &
   \checkmark{} (xESMF) &
@@ -955,27 +956,12 @@ important and how they combine in the optimal blend.
 
 \paragraph{PLS diagnostics and HadGEM3-GA7.1 dominance.}
 Figure~\ref{fig:diagnostics} provides standard PLS/SIMCA
-diagnostic plots. The loading plot (panel~d) reveals a striking
-structure: HadGEM3-GA7.1 sits isolated at loading distance 1.01
-in the opposite quadrant from the other 10 kernels, which cluster
-tightly at distances 0.27--0.35. This is a purely data-driven
-result---HadGEM3-GA7.1 has 3.5$\times$ the prediction standard
-deviation (116~\Wmsq{}) of any other kernel ($\sim$28--34~\Wmsq{}),
-yielding 3.2$\times$ the covariance with CERES observations.
-Since PLS component~1 maximizes covariance, HadGEM3-GA7.1
-dominates: VIP~$= 2.49$ vs.~$0.55$--$0.77$ for the rest.
-
-Paradoxically, HadGEM3-GA7.1 has the \emph{second-lowest}
-correlation with CERES ($r = -0.69$; CAM3 leads at $r = -0.74$)
-and the \emph{worst} MSE by 8$\times$ (16{,}867 vs.\
-1{,}700--2{,}400). But it has the lowest bias ($+1.4$~\Wmsq{}
-vs.\ $-2.3$ to $-4.1$ for others). PLS exploits this: HadGEM3
-provides the largest ``lever arm'' for covariance projection,
-and the remaining kernels correct its overestimation. An
-ablation test confirms this interpretation: dropping HadGEM3
-\emph{improves} $\Qsq$ by $+0.003$ ($0.548$ vs.\ $0.544$),
-because the 3-component model wastes 2 components modeling
-HadGEM3's outlier variance.
+diagnostic plots. The loading plot (panel~d) shows all 11
+kernels clustering at similar distances (0.2--0.4), reflecting
+their high collinearity: all predict the same non-cloud LW
+response with similar methodology. CloudSat sits slightly apart
+($\Qsq = 0.48$, $r = 0.70$), while the remaining 10 kernels
+achieve $r \approx 0.79$--$0.80$ and $\Qsq \approx 0.60$--$0.64$.
 
 The score plot (panel~a) shows HadGEM3's regime (teal) centered
 near the origin ($\bar{t}_1 = +1.1$, $\bar{t}_2 = -1.5$),
@@ -1000,17 +986,16 @@ and X-space residuals respectively.
 
 \paragraph{Component selection.}
 Figure~\ref{fig:component_sweep} shows $\Qsq$ as a function
-of the number of PLS components. Component~1 captures 95.4\%
-of X-variance and achieves $\Qsq = 0.523$ (dominated by
-HadGEM3-GA7.1). Component~2 adds 3.5\% X-variance and $\Delta
-\Qsq = +0.019$ (the HadGEM3 vs.\ others contrast). Component~3
-captures CloudSat's unique variance ($p_3 = 0.96$) for $\Delta
-\Qsq = +0.003$. Beyond 3 components, marginal $\Qsq$ gains fall
-below 0.005 per component and approach zero at $A = 7$. Test
-$\Qsq$ never falls below train $R^2$, confirming no overfitting
-with 224{,}000 training samples and 11 features. We use $A = 3$
-as a conservative default; cross-validated component selection is
-left to future work.
+of the number of PLS components. Component~1 achieves
+$\Qsq = 0.642$, capturing the dominant kernel consensus.
+Component~2 adds $\Delta\Qsq = +0.004$ and Component~3
+$\Delta\Qsq = +0.006$, together resolving interkernel contrasts.
+Beyond 3~components, marginal $\Qsq$ gains fall below 0.002 per
+component and approach zero at $A = 7$. Test $\Qsq$ closely
+tracks train $R^2$ throughout, confirming no overfitting with
+224{,}000 training samples and 11 features. We use $A = 3$ as a
+conservative default; cross-validated component selection is left
+to future work.
 
 \begin{figure}[t]
 \centering
@@ -1031,33 +1016,32 @@ $\arg\min_k |{\Delta R^{(k)} - \Delta R^\text{obs}}|$)
 outperform the 16 prescribed climate-state regimes
 ($4 \times 2 \times 2$: latitude $\times$ cloud $\times$
 stability) on this data: the 11-regime global PLS achieves
-$\Qsq = 0.544$ vs.\ $\Qsq = 0.452$ for 16-regime SIMCA-blended
-PLS. The prescribed regimes are degenerate---most samples fall
-into only 4 of 16 bins (no convective regimes)---while the
-kernel regimes are well-distributed (10--17\% each for the top 5
-kernels). Cross-tabulation reveals that HadGEM3-GA7.1 dominates
-the subtropical-cloudy, midlatitude, and polar-clear regimes
-(23--32\%), while CAM3, CloudSat, and BMRC take over in
-polar-cloudy and equatorial domains---a physically sensible
-pattern consistent with each model's radiative transfer
-assumptions.
+$\Qsq = 0.652$ while the 16-regime SIMCA-blended PLS yields
+lower $\Qsq$. The prescribed regimes are degenerate---most
+samples fall into only 4 of 16 bins (no convective
+regimes)---while the kernel regimes are well-distributed
+(10--17\% each for the top 5 kernels). Cross-tabulation reveals
+that HadGEM3-GA7.1 dominates the subtropical-cloudy,
+midlatitude, and polar-clear regimes (23--32\%), while CAM3,
+CloudSat, and BMRC take over in polar-cloudy and equatorial
+domains---a physically sensible pattern consistent with each
+model's radiative transfer assumptions.
 
-\paragraph{Why $\Qsq < 0$ for individual kernels?}
-On real data, all 11 individual kernel predictions produce
-$\Qsq < 0$ (best: CloudSat with $\Qsq = -3.90$), meaning they
-are worse than predicting the mean $\Delta$OLR. This arises
-because raw kernel predictions $\Delta R^{(k)} = \sum_p
-K_T^{(k)}(p) \Delta T(p) + K_{Ts}^{(k)} \Delta T_s + \ldots$
-contain substantial biases from: (1) differing radiative transfer
+\paragraph{Why does PLS improve over individual kernels?}
+On real data, individual kernel predictions achieve $\Qsq$
+between 0.48 (CloudSat) and 0.64 (HadGEM2), confirming that the
+kernel method is physically sound when properly applied with
+pressure-thickness weighting ($dp/10000$), Clausius--Clapeyron
+humidity normalization, and troposphere-only integration.
+The interkernel spread---arising from differing radiative transfer
 codes and vertical resolution (17--37 pressure levels across
-kernels), (2) nearest-neighbor spatial regridding from kernel grids
-(56--360 meridional points) to the 36$\times$36 observational grid,
-and (3) linearization errors at large anomalies. That PLS
-harmonization transforms these collectively biased predictions
-into a skillful ensemble ($\Qsq = 0.554$) demonstrates the
-power of the data-driven approach: the PLS regression coefficients
-learn to correct systematic biases while preserving the
-information content of each kernel.
+kernels)---is modest ($\Qsq$ range $\sim$0.16). PLS
+harmonization improves to $\Qsq = 0.652$ by optimally weighting
+the 11 predictions, a gain of $\sim$0.01 over the best
+individual kernel. The simple mean ($\Qsq = 0.626$) is
+competitive, confirming that the kernels share a common signal
+and the PLS contribution is one of variance reduction rather
+than bias correction.
 
 \paragraph{Why $\Qsq = 0.704$ on real data (Step~2)?}
 The gap between synthetic ($\Qsq = 0.967$) and real ($\Qsq =
@@ -1176,11 +1160,15 @@ introduces data-driven kernel estimation:
     retunes a global PLS using the regime structure via four
     competing approaches (SIMCA-augmented features, regime-weighted
     PLS, iterative refinement, regime collapse), achieving
-    $\Qsq = 0.806$ on synthetic benchmarks and $\Qsq = 0.554$ on
-    real CERES + NCEP data with 76\% interkernel RMSE reduction.
-    Individual kernels achieve $\Qsq < 0$ on real data, demonstrating
-    the necessity of data-driven harmonization. A comprehensive
-    $\Qsq$ dashboard and thermodynamic compliance analysis enable
+    $\Qsq = 0.806$ on synthetic benchmarks and $\Qsq = 0.655$ on
+    real CERES + NCEP data. Individual kernels achieve $\Qsq$
+    between 0.48 and 0.64 when properly applied with
+    pressure-thickness weighting, Clausius--Clapeyron humidity
+    normalization, and troposphere-only integration;
+    PLS harmonization provides modest improvement ($\Qsq = 0.652$
+    for global PLS, $\Qsq = 0.655$ for best retune) by optimally
+    weighting the 11 kernel predictions. A comprehensive $\Qsq$
+    dashboard and thermodynamic compliance analysis enable
     principled method selection. xESMF regridding maintains full
     backward compatibility with \oldsystem{} v1.2.
   \item \textbf{Step~2 (Data-Driven Extension):} The same
